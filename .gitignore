@@ -1,0 +1,3 @@
+# 編譯產物不進版本庫：從網路下載的 app 會被 Gatekeeper 隔離，
+# 而且拿不到麥克風權限。一律在使用者自己的機器上編譯。
+recorder/VoiceTypeRec.app/

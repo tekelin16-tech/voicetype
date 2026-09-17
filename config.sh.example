@@ -1,0 +1,30 @@
+# VoiceType 設定檔 — 改完存檔即生效，不用重啟
+# 這份是範本。實際使用的是 ~/.config/voicetype/config.sh，
+# 安裝程式只會在它不存在時才建立，不會蓋掉你改過的設定。
+
+# 麥克風「名稱」，不是索引——接耳機時索引會整個跑掉。
+# 留空 = 用系統列出的第一個裝置。
+# 看可用名稱：~/.local/share/voicetype/vt.sh status
+MIC_NAME=""
+
+# 辨識模型
+MODEL="$HOME/.cache/voicetype/models/ggml-large-v3-turbo.bin"
+LANG_CODE="zh"          # 講英文改成 en，或 auto 自動偵測
+PORT=8178
+
+# DeepSeek 修稿
+DS_MODEL="deepseek-flash"      # 快又便宜；要更強可換 deepseek-v4-pro
+
+# 預設修稿風格：default / prompt / message / email / note / raw
+# raw = 跳過 DeepSeek，完全離線、不送任何東西出去
+STYLE="default"
+
+# 專有名詞熱詞表：人名、品牌、術語寫進去可大幅改善辨識。
+# 逗號分隔，建議 30 個以內——太長會拖慢辨識。
+# 例：VOCAB="公司名,產品名,某某經理,ERP,Figma"
+VOCAB=""
+
+SOUNDS=1        # 開始/結束提示音
+AUTO_PASTE=1    # 0 = 只複製到剪貼簿，不自動貼上
+MAX_SECONDS=300 # 單次錄音上限（秒），防呆
+MIN_LEVEL=-60   # 平均音量低於此 dB 視為沒說話

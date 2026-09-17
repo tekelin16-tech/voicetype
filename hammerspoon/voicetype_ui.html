@@ -1,0 +1,295 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>VoiceType</title>
+<style>
+  :root{
+    --bg:#f6f6f7; --panel:#fff; --line:#e3e3e6; --txt:#16161a; --dim:#71717a;
+    --accent:#2563eb; --danger:#dc2626; --chip:#eeeef1;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#141416; --panel:#1c1c1f; --line:#2c2c31; --txt:#f2f2f4; --dim:#9a9aa3;
+           --accent:#5b9dff; --danger:#f87171; --chip:#26262b; }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:13px/1.55 -apple-system,"PingFang TC","Helvetica Neue",sans-serif;
+       background:var(--bg);color:var(--txt);-webkit-user-select:none}
+  header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);
+         padding:10px 16px;display:flex;gap:8px;align-items:center;z-index:10}
+  .tab{padding:5px 12px;border-radius:7px;cursor:pointer;color:var(--dim);font-weight:600}
+  .tab.on{background:var(--chip);color:var(--txt)}
+  #search{margin-left:auto;padding:5px 10px;border:1px solid var(--line);border-radius:7px;
+          background:var(--panel);color:var(--txt);width:190px;font-size:12px;-webkit-user-select:text}
+  main{padding:14px 16px 40px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+        padding:11px 13px;margin-bottom:9px}
+  .meta{display:flex;gap:8px;align-items:center;font-size:11px;color:var(--dim);margin-bottom:6px}
+  .chip{background:var(--chip);padding:1px 7px;border-radius:5px;font-size:10px}
+  .out{white-space:pre-wrap;word-break:break-word;-webkit-user-select:text}
+  .raw{white-space:pre-wrap;color:var(--dim);font-size:12px;margin-top:8px;
+       padding-top:8px;border-top:1px dashed var(--line);-webkit-user-select:text}
+  textarea{width:100%;min-height:74px;border:1px solid var(--accent);border-radius:7px;
+           padding:8px;font:inherit;background:var(--panel);color:var(--txt);resize:vertical;
+           -webkit-user-select:text}
+  .row{display:flex;gap:6px;margin-top:8px;flex-wrap:wrap}
+  button{border:1px solid var(--line);background:var(--panel);color:var(--txt);
+         padding:4px 11px;border-radius:6px;cursor:pointer;font:inherit;font-size:12px}
+  button:hover{background:var(--chip)}
+  button.p{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.d{color:var(--danger)}
+  .empty{text-align:center;color:var(--dim);padding:50px 20px}
+  .fld{margin-bottom:16px}
+  .fld label{display:block;font-weight:600;margin-bottom:4px}
+  .fld .help{color:var(--dim);font-size:11px;margin-bottom:6px}
+  .fld input[type=text],.fld select,.fld textarea{
+    width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:7px;
+    background:var(--panel);color:var(--txt);font:inherit;-webkit-user-select:text}
+  .fld textarea{min-height:56px}
+  .hk{display:flex;gap:8px;align-items:center}
+  .hk .cap{flex:1;padding:6px 10px;border:1px solid var(--line);border-radius:7px;
+           background:var(--panel);font-size:14px;cursor:pointer}
+  .hk .cap.rec{border-color:var(--accent);color:var(--accent)}
+  .save{position:sticky;bottom:0;background:var(--bg);border-top:1px solid var(--line);
+        padding:10px 0;margin-top:18px;display:flex;gap:8px;align-items:center}
+  .note{color:var(--dim);font-size:11px}
+  .sw{display:flex;gap:8px;align-items:center;margin-bottom:9px}
+  .step{display:flex;gap:12px;margin-bottom:15px}
+  .step>b{flex:0 0 22px;height:22px;border-radius:50%;background:var(--accent);color:#fff;
+          font-size:12px;display:grid;place-items:center;margin-top:2px}
+  .st{font-weight:600;margin-bottom:2px}
+  .k{background:var(--chip);border:1px solid var(--line);border-radius:5px;padding:1px 6px;
+     font-size:12px;white-space:nowrap}
+</style>
+
+<header>
+  <div class="tab on" data-t="hist">歷史紀錄</div>
+  <div class="tab" data-t="set">設定</div>
+  <input id="search" placeholder="搜尋…">
+</header>
+<main>
+  <div id="hist"></div>
+  <div id="set" hidden></div>
+</main>
+
+<script>
+const send = (action, payload) =>
+  window.webkit.messageHandlers.voicetype.postMessage({ action, payload: payload || {} });
+
+let HIST = [], CFG = {}, editing = null;
+
+const esc = s => (s||"").replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+const STYLE_NAME = { default:"一般", prompt:"AI 指令", message:"訊息", email:"信件", note:"筆記", raw:"原始" };
+
+function when(ts){
+  const d = new Date(ts), now = new Date();
+  const mins = Math.floor((now - d) / 60000);
+  if (mins < 1) return "剛剛";
+  if (mins < 60) return mins + " 分鐘前";
+  const sameDay = d.toDateString() === now.toDateString();
+  const hm = String(d.getHours()).padStart(2,"0") + ":" + String(d.getMinutes()).padStart(2,"0");
+  if (sameDay) return "今天 " + hm;
+  return (d.getMonth()+1) + "/" + d.getDate() + " " + hm;
+}
+
+// 還沒有任何紀錄時顯示上手說明——第一次打開的人最需要的是知道怎麼開始，
+// 不是一句「沒有資料」。
+function welcomeHTML(){
+  const hk = k => prettyHK(CFG.hotkeys?.[k]);
+  return `
+  <div class="card" style="padding:20px 22px">
+    <div style="font-size:17px;font-weight:700;margin-bottom:4px">開始用吧</div>
+    <div style="color:var(--dim);margin-bottom:18px">三個步驟，第一次大概花你一分鐘。</div>
+
+    <div class="step"><b>1</b><div>
+      <div class="st">先確認權限給了</div>
+      系統設定 → 隱私權與安全性 →
+      <b>輔助使用</b> 打開 Hammerspoon。<b>麥克風</b> 在你第一次按熱鍵時會跳出來，按允許。
+    </div></div>
+
+    <div class="step"><b>2</b><div>
+      <div class="st">按住 <span class="k">${hk("push")}</span> 說一句話，放開</div>
+      整理好的文字會直接出現在游標位置。<br>
+      螢幕正中央會有個面板顯示音量波形——<b>看到波形在動就代表有收到你的聲音</b>。
+      面板可以用滑鼠拖到你喜歡的位置。
+      <div style="color:var(--dim);margin-top:5px">
+        提示音響了再開口。麥克風開啟需要約 0.75 秒，那個「叮」就是「可以說了」。
+      </div>
+    </div></div>
+
+    <div class="step"><b>3</b><div>
+      <div class="st">講的內容都會記在這一頁</div>
+      可以搜尋、複製、<b>編輯</b>、刪除。講完發現用錯風格也不用重講。
+    </div></div>
+
+    <div style="border-top:1px solid var(--line);margin-top:18px;padding-top:16px">
+      <div class="st">其他你會用到的</div>
+      <table style="margin:0">
+        <tr><td style="width:120px"><span class="k">${hk("push")}</span> 按一下</td>
+            <td>改成鎖定錄音，再按一下結束。長篇口述用這個，手不用一直按著。</td></tr>
+        <tr><td><span class="k">${hk("style")}</span></td>
+            <td>換修稿風格：訊息、信件、AI 指令、筆記…</td></tr>
+        <tr><td><span class="k">${hk("ui")}</span></td>
+            <td>隨時叫出這個視窗</td></tr>
+        <tr><td><span class="k">Esc</span></td><td>錄音到一半想反悔</td></tr>
+        <tr><td>選單列 <b>🎙</b></td><td>右上角那個麥克風圖示，所有功能都在裡面</td></tr>
+      </table>
+    </div>
+
+    <div style="border-top:1px solid var(--line);margin-top:16px;padding-top:14px;color:var(--dim);font-size:12px">
+      貼不進去的時候（例如焦點不在輸入框），文字會留在剪貼簿並跳出提示，按 ⌘V 就好。<br>
+      不想讓內容送到 DeepSeek，把風格切成「原始」，就是純本機離線。
+    </div>
+  </div>`;
+}
+
+function renderHist(){
+  const q = document.getElementById("search").value.trim().toLowerCase();
+  const list = HIST.filter(e => !q || (e.out+e.raw).toLowerCase().includes(q));
+  const el = document.getElementById("hist");
+  if (!list.length){
+    el.innerHTML = q ? '<div class="empty">找不到符合的紀錄</div>' : welcomeHTML();
+    return;
+  }
+  el.innerHTML = list.map(e => {
+    const isEd = editing === e.id;
+    return `<div class="card" data-id="${e.id}">
+      <div class="meta"><span>${when(e.ts)}</span>
+        <span class="chip">${STYLE_NAME[e.style] || e.style}</span></div>
+      ${isEd
+        ? `<textarea id="ta-${e.id}">${esc(e.out)}</textarea>
+           <div class="row">
+             <button class="p" data-a="save" data-id="${e.id}">儲存</button>
+             <button data-a="cancel">取消</button>
+           </div>`
+        : `<div class="out">${esc(e.out)}</div>
+           ${e.raw && e.raw !== e.out ? `<div class="raw">原始辨識：${esc(e.raw)}</div>` : ""}
+           <div class="row">
+             <button data-a="copy" data-id="${e.id}">複製</button>
+             <button data-a="edit" data-id="${e.id}">編輯</button>
+             <button class="d" data-a="del" data-id="${e.id}">刪除</button>
+           </div>`}
+    </div>`;
+  }).join("");
+}
+
+// alt+shift+space → ⌥⇧Space，比較好讀
+const SYM = { cmd:"⌘", alt:"⌥", ctrl:"⌃", shift:"⇧" };
+function prettyHK(str){
+  if (!str) return "（未設定）";
+  const p = str.split("+");
+  const key = p.pop();
+  return p.map(m => SYM[m] || m).join("") +
+         (key === "space" ? "Space" : key.toUpperCase());
+}
+
+const HOTKEYS = [
+  ["push",   "按住說話",       "按住講，放開就轉錄貼上；短按一下改成鎖定錄音"],
+  ["toggle", "切換錄音",       "按一下開始，再按一下結束，適合長篇口述"],
+  ["style",  "選修稿風格",     "叫出風格選單"],
+];
+
+function renderSet(){
+  document.getElementById("set").innerHTML = `
+    <div class="fld"><label>熱鍵</label>
+      <div class="help">點一下欄位，然後按下你要的組合鍵。改完按最下面的儲存。</div>
+      ${HOTKEYS.map(([k,n,h]) => `
+        <div class="hk" style="margin-bottom:7px">
+          <div style="width:88px">${n}</div>
+          <div class="cap" data-hk="${k}">${prettyHK(CFG.hotkeys?.[k])}</div>
+        </div>
+        <div class="help" style="margin:-3px 0 9px 96px">${h}</div>`).join("")}
+    </div>
+
+    <div class="fld"><label>預設修稿風格</label>
+      <select id="style">${Object.entries(STYLE_NAME).map(([k,v]) =>
+        `<option value="${k}"${CFG.style===k?" selected":""}>${v}</option>`).join("")}</select>
+      <div class="help">「原始」＝跳過 DeepSeek，完全離線，不送任何東西出去。</div>
+    </div>
+
+    <div class="fld"><label>專有名詞熱詞表</label>
+      <div class="help">人名、品牌、術語寫進去可大幅改善辨識。逗號分隔，建議 30 個以內——太長會拖慢辨識。</div>
+      <textarea id="vocab">${esc(CFG.vocab||"")}</textarea>
+    </div>
+
+    <div class="fld"><label>麥克風</label>
+      <select id="mic">
+        <option value="">（系統第一個裝置）</option>
+        ${(CFG.mics||[]).map(m => `<option${CFG.mic===m?" selected":""}>${esc(m)}</option>`).join("")}
+      </select>
+    </div>
+
+    <div class="fld"><label>其他</label>
+      <div class="sw"><input type="checkbox" id="sounds"${CFG.sounds?" checked":""}><label for="sounds" style="font-weight:400;margin:0">開始／結束提示音</label></div>
+      <div class="sw"><input type="checkbox" id="autopaste"${CFG.autopaste?" checked":""}><label for="autopaste" style="font-weight:400;margin:0">自動貼到游標位置（關掉就只複製到剪貼簿）</label></div>
+    </div>
+
+    <div class="save">
+      <button class="p" id="dosave">儲存設定</button>
+      <span class="note" id="savenote">改熱鍵需要重新載入 Hammerspoon，儲存時會自動做。</span>
+    </div>`;
+}
+
+// 熱鍵擷取
+let capturing = null;
+document.addEventListener("keydown", e => {
+  if (!capturing) return;
+  e.preventDefault(); e.stopPropagation();
+  if (["Shift","Control","Alt","Meta"].includes(e.key)) return;
+  const mods = [];
+  if (e.ctrlKey) mods.push("ctrl");
+  if (e.altKey) mods.push("alt");
+  if (e.shiftKey) mods.push("shift");
+  if (e.metaKey) mods.push("cmd");
+  let key = e.code.replace(/^Key|^Digit/, "").toLowerCase();
+  if (e.code === "Space") key = "space";
+  if (!mods.length) { document.getElementById("savenote").textContent = "至少要有一個修飾鍵（⌘⌥⌃⇧），否則會攔到你正常打字。"; return; }
+  CFG.hotkeys[capturing] = mods.join("+") + "+" + key;
+  const el = document.querySelector(`[data-hk="${capturing}"]`);
+  el.textContent = prettyHK(CFG.hotkeys[capturing]); el.classList.remove("rec");
+  capturing = null;
+}, true);
+
+document.addEventListener("click", ev => {
+  const t = ev.target;
+  if (t.classList.contains("tab")){
+    document.querySelectorAll(".tab").forEach(x => x.classList.toggle("on", x === t));
+    document.getElementById("hist").hidden = t.dataset.t !== "hist";
+    document.getElementById("set").hidden  = t.dataset.t !== "set";
+    document.getElementById("search").style.visibility = t.dataset.t === "hist" ? "visible" : "hidden";
+    return;
+  }
+  if (t.dataset.hk){
+    document.querySelectorAll(".cap").forEach(x => x.classList.remove("rec"));
+    t.classList.add("rec"); t.textContent = "按下你要的組合鍵…"; capturing = t.dataset.hk; return;
+  }
+  const a = t.dataset.a;
+  if (!a) return;
+  const id = t.dataset.id;
+  if (a === "edit"){ editing = id; renderHist(); document.getElementById("ta-"+id)?.focus(); }
+  else if (a === "cancel"){ editing = null; renderHist(); }
+  else if (a === "save"){
+    const v = document.getElementById("ta-"+id).value;
+    const e = HIST.find(x => x.id === id); if (e) e.out = v;
+    editing = null; renderHist(); send("save", { id, out: v });
+  }
+  else if (a === "copy"){ const e = HIST.find(x => x.id === id); send("copy", { text: e.out }); t.textContent = "已複製"; setTimeout(() => t.textContent = "複製", 1200); }
+  else if (a === "del"){ HIST = HIST.filter(x => x.id !== id); renderHist(); send("delete", { id }); }
+  else if (t.id === "dosave"){
+    CFG.style = document.getElementById("style").value;
+    CFG.vocab = document.getElementById("vocab").value;
+    CFG.mic   = document.getElementById("mic").value;
+    CFG.sounds = document.getElementById("sounds").checked;
+    CFG.autopaste = document.getElementById("autopaste").checked;
+    document.getElementById("savenote").textContent = "已儲存";
+    send("settings", CFG);
+  }
+});
+document.getElementById("search").addEventListener("input", renderHist);
+
+// Lua 呼叫這個把資料送進來
+window.vtReceive = data => {
+  // 設定一定要先設好：上手說明裡要顯示熱鍵，先渲染歷史的話會變成「（未設定）」
+  if (data.config)  { CFG = data.config; CFG.hotkeys = CFG.hotkeys || {}; renderSet(); }
+  if (data.history) { HIST = data.history; renderHist(); }
+};
+send("ready");
+</script>

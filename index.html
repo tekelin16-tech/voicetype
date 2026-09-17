@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="zh-Hant">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>VoiceType — 語音聽寫</title>
+<meta name="description" content="按住一個鍵說話，整理好的文字直接出現在游標位置。本機辨識 + AI 修稿。">
+<style>
+  :root{
+    color-scheme:light;
+    --bg:#fbfbfc; --panel:#fff; --line:#e4e4e8; --txt:#16161a; --dim:#6b6b76;
+    --accent:#2563eb; --code-bg:#15151a; --code-txt:#e8e8ec; --chip:#f0f0f3;
+  }
+  :root:not([data-theme="light"]) { }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      color-scheme:dark;
+      --bg:#111114; --panel:#1a1a1e; --line:#2a2a31; --txt:#f3f3f5; --dim:#9b9ba5;
+      --accent:#6ea8ff; --code-bg:#0b0b0e; --code-txt:#e8e8ec; --chip:#25252b;
+    }
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--txt);
+       font:16px/1.7 -apple-system,BlinkMacSystemFont,"PingFang TC","Noto Sans TC",
+            "Helvetica Neue",sans-serif;
+       padding:0 20px env(safe-area-inset-bottom,0px)}
+  .wrap{max-width:720px;margin:0 auto;padding-block:56px 80px}
+  h1{font-size:40px;line-height:1.2;margin:0 0 10px;letter-spacing:-.02em}
+  .tag{color:var(--dim);font-size:18px;margin:0 0 36px}
+  h2{font-size:20px;margin:44px 0 12px;letter-spacing:-.01em}
+  h3{font-size:15px;margin:22px 0 6px;color:var(--dim);font-weight:600}
+  p{margin:0 0 14px}
+  .dim{color:var(--dim)}
+  .cmd{background:var(--code-bg);border-radius:12px;padding:16px 18px;
+       display:flex;gap:12px;align-items:center;margin:0 0 10px;overflow-x:auto}
+  .cmd code{color:var(--code-txt);font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;
+            white-space:nowrap;flex:1}
+  .cmd button{background:#2f2f38;color:#fff;border:0;border-radius:7px;
+              padding:7px 13px;font:inherit;font-size:13px;cursor:pointer;flex-shrink:0}
+  .cmd button:hover{background:#3d3d48}
+  .cmd button.done{background:#16a34a}
+  table{width:100%;border-collapse:collapse;margin:0 0 16px;font-size:15px}
+  th,td{text-align:left;padding:9px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font-size:13px;color:var(--dim);font-weight:600}
+  kbd{background:var(--chip);border:1px solid var(--line);border-radius:5px;
+      padding:2px 7px;font:13px ui-monospace,Menlo,monospace;white-space:nowrap}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;
+        padding:16px 18px;margin:0 0 14px}
+  .steps{counter-reset:s;list-style:none;padding:0;margin:0}
+  .steps li{counter-increment:s;position:relative;padding-left:34px;margin-bottom:14px}
+  .steps li::before{content:counter(s);position:absolute;left:0;top:1px;
+    width:23px;height:23px;border-radius:50%;background:var(--chip);color:var(--txt);
+    font-size:12px;font-weight:700;display:grid;place-items:center}
+  .warn{border-left:3px solid #d97706;padding-left:14px;margin:0 0 16px}
+  footer{margin-top:60px;padding-top:22px;border-top:1px solid var(--line);
+         color:var(--dim);font-size:14px}
+  a{color:var(--accent)}
+  @media (max-width:520px){ h1{font-size:30px} .cmd{flex-direction:column;align-items:stretch}
+    .cmd code{white-space:pre-wrap;word-break:break-all} }
+</style>
+
+<div class="wrap">
+  <h1>VoiceType</h1>
+  <p class="tag">按住一個鍵說話，整理好的文字直接出現在游標位置。</p>
+
+  <div class="cmd">
+    <code id="c">curl -fsSL https://tekelin16-tech.github.io/voicetype/install.sh | bash</code>
+    <button id="b">複製</button>
+  </div>
+  <p class="dim" style="font-size:14px">
+    打開「終端機」貼上執行。第一次約 5–10 分鐘（要下載 1.5GB 的辨識模型）。
+    只支援 macOS。
+  </p>
+
+  <h2>它做什麼</h2>
+  <p>
+    你講話，它把話變成可以直接用的文字——不是逐字稿，是<strong>整理過</strong>的：
+    補好標點、拿掉「呃、那個、就是說」、簡體轉成台灣用語、依情境調整語氣。
+  </p>
+
+  <div class="card">
+    <h3 style="margin-top:0">兩段式，各做各擅長的</h3>
+    <table>
+      <tr><th style="width:80px">聽</th>
+          <td><strong>whisper.cpp</strong>，跑在你自己的電腦上。
+          聲音不會離開這台機器，也不用付辨識費用。11.7 秒的話約 0.8 秒辨識完。</td></tr>
+      <tr><th>修稿</th>
+          <td><strong>DeepSeek</strong>。負責標點、贅字、簡轉繁、語氣。約 2 秒。</td></tr>
+    </table>
+    <p class="dim" style="margin:0;font-size:14px">
+      不想讓文字出去？把風格切成「原始」，完全跳過 DeepSeek，純本機離線運作。
+    </p>
+  </div>
+
+  <h2>怎麼用</h2>
+  <table>
+    <tr><th style="width:150px">按鍵</th><th>做什麼</th></tr>
+    <tr><td><kbd>⌥Space</kbd></td><td>按住說話，放開就貼上</td></tr>
+    <tr><td><kbd>⌥Space</kbd> 按一下</td><td>改成鎖定錄音，再按一下結束（長句用）</td></tr>
+    <tr><td><kbd>⌥⇧Space</kbd></td><td>切換錄音</td></tr>
+    <tr><td><kbd>⌥⌘Space</kbd></td><td>選修稿風格</td></tr>
+    <tr><td><kbd>⌥⌘H</kbd></td><td>歷史紀錄與設定</td></tr>
+    <tr><td><kbd>Esc</kbd></td><td>錄音中取消</td></tr>
+  </table>
+  <p class="dim" style="font-size:14px">熱鍵全部可以在設定裡改。</p>
+
+  <h3>六種修稿風格</h3>
+  <table>
+    <tr><td style="width:90px">一般</td><td>補標點、去贅字、繁體台灣用語</td></tr>
+    <tr><td>AI 指令</td><td>口述要丟給 AI 的指令，整理成條理清楚的敘述</td></tr>
+    <tr><td>訊息</td><td>LINE、即時通訊。保持口語，不會變公文體</td></tr>
+    <tr><td>信件</td><td>書面語、禮貌得體、適當分段</td></tr>
+    <tr><td>筆記</td><td>條列重點，保留所有資訊</td></tr>
+    <tr><td>原始</td><td>跳過 DeepSeek。離線可用、不花錢、不送資料出去</td></tr>
+  </table>
+  <p class="dim" style="font-size:14px">
+    講錯風格不用重錄——歷史紀錄裡可以換個風格重新修稿。
+  </p>
+
+  <h2>安裝之前要知道</h2>
+  <ul class="steps">
+    <li><strong>需要 Homebrew。</strong>沒有的話安裝程式會告訴你怎麼裝。</li>
+    <li><strong>需要 Xcode Command Line Tools。</strong>沒有的話會自動跳出安裝視窗。
+        錄音程式是在<em>你的電腦上</em>編譯的——這樣才拿得到麥克風權限。</li>
+    <li><strong>需要一把 DeepSeek API key。</strong>
+        到 <a href="https://platform.deepseek.com/api_keys">platform.deepseek.com</a> 申請，
+        安裝時貼上，會存進你自己的 Keychain。沒有 key 也能用，只是文字不會被整理。</li>
+    <li><strong>裝完要給兩個權限。</strong>系統設定 → 隱私權與安全性 →
+        「輔助使用」打開 Hammerspoon；「麥克風」第一次按熱鍵時會跳出來。</li>
+  </ul>
+
+  <div class="warn">
+    <p style="margin:0">
+      <strong>跟同類工具不能同時開。</strong>Typeless、superwhisper 這類工具會把麥克風
+      一直握著，VoiceType 就錄不到聲音。真的撞到時它會直接告訴你是誰佔用。
+    </p>
+  </div>
+
+  <h2>不想用了</h2>
+  <div class="cmd"><code>~/.local/share/voicetype/uninstall.sh</code>
+    <button data-c="~/.local/share/voicetype/uninstall.sh">複製</button></div>
+  <p class="dim" style="font-size:14px">
+    會問你一次才動手，也不會去動 brew 裝的東西（別的程式可能在用）。
+  </p>
+
+  <footer>
+    <a href="https://github.com/tekelin16-tech/voicetype">原始碼在 GitHub</a>
+    ・重跑一次安裝指令就是更新
+  </footer>
+</div>
+
+<script>
+  document.addEventListener("click", e => {
+    const b = e.target.closest("button"); if (!b) return;
+    const text = b.dataset.c || document.getElementById("c").textContent;
+    navigator.clipboard.writeText(text).then(() => {
+      const old = b.textContent;
+      b.textContent = "已複製"; b.classList.add("done");
+      setTimeout(() => { b.textContent = old; b.classList.remove("done"); }, 1600);
+    });
+  });
+</script>
+</html>

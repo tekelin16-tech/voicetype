@@ -1,0 +1,329 @@
+#!/bin/bash
+# voicetype — 語音聽寫：whisper.cpp 辨識 + DeepSeek 修稿 + 貼到游標位置
+# 用法: vt.sh toggle | start | stop | cancel | status | server-start | server-stop | test
+set -uo pipefail
+export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
+CONF="$HOME/.config/voicetype/config.sh"
+[ -f "$CONF" ] && . "$CONF"
+
+: "${MIC_NAME:=}"        # 空的 = 用系統列出的第一個裝置
+: "${MODEL:=$HOME/.cache/voicetype/models/ggml-large-v3-turbo.bin}"
+: "${PORT:=8178}"
+: "${LANG_CODE:=zh}"
+: "${DS_MODEL:=deepseek-flash}"
+: "${DS_ENDPOINT:=https://api.deepseek.com/chat/completions}"
+: "${STYLE:=default}"
+: "${SOUNDS:=1}"
+: "${AUTO_PASTE:=1}"
+: "${MAX_SECONDS:=300}"
+: "${VT_PASTE:=auto}"   # auto=自己貼(指令列) / none=只輸出交給呼叫端貼(Hammerspoon)
+: "${MIN_LEVEL:=-60}"   # 平均音量低於此 dB 視為沒說話
+: "${HISTORY_MAX:=500}" # 歷史紀錄保留幾筆   # 平均音量低於此 dB 視為沒說話。實測：數位靜音 -91、安靜房間 -41、正常說話 -15
+: "${VOCAB:=}"
+
+# API key：Keychain 優先。刻意排在環境變數前面——.zshrc 裡可能留著過期的
+# DEEPSEEK_API_KEY，那會安靜地蓋掉正確的那把，症狀是「修稿突然失效」很難查。
+# 要臨時覆寫就用 VT_KEY=xxx ./vt.sh
+if [ -n "${VT_KEY:-}" ]; then
+  DEEPSEEK_API_KEY="$VT_KEY"
+else
+  K=$(security find-generic-password -s voicetype-deepseek -w 2>/dev/null)
+  [ -n "$K" ] && DEEPSEEK_API_KEY="$K"
+fi
+export DEEPSEEK_API_KEY="${DEEPSEEK_API_KEY:-}"
+
+RUN="$HOME/.cache/voicetype"; mkdir -p "$RUN"
+PIDFILE="$RUN/rec.pid"; RAW="$RUN/rec_raw.wav"; WAV="$RUN/rec.wav"; LOG="$RUN/vt.log"
+# 錄音一律走這個有 bundle 的 app。ffmpeg 只拿來轉檔——轉檔不需要麥克風權限。
+VTREC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recorder/VoiceTypeRec.app/Contents/MacOS/vtrec"
+SRVPID="$RUN/server.pid"; STYLEFILE="$RUN/style"; LEVEL="$RUN/level"; LASTRAW="$RUN/last_raw.txt"; LASTOUT="$RUN/last_out.txt"; HISTORY="$RUN/history.jsonl"
+
+log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+ding(){ [ "$SOUNDS" = 1 ] && afplay "/System/Library/Sounds/$1.aiff" >/dev/null 2>&1 & }
+notify(){ osascript -e "display notification \"$1\" with title \"VoiceType\"" >/dev/null 2>&1; }
+
+# ---------- 麥克風 ----------
+# 裝置清單以 vtrec 為準：ffmpeg 的 avfoundation 列舉跟 AVFoundation 的不完全一樣，
+# 用會錄音的那個當唯一真相，才不會「清單上有、實際挑不到」。
+mic_scan(){ "$VTREC" --list 2>/dev/null | sed 's/^[^|]*|//'; }
+
+mic_ok(){   # 設定的名稱是否真的存在（沒設定就是用第一個，一定成立）
+  [ -z "$MIC_NAME" ] && return 0
+  local nm
+  while IFS= read -r nm; do [ "$nm" = "$MIC_NAME" ] && return 0; done < <(mic_scan)
+  return 1
+}
+
+# ---------- whisper-server：常駐省下每次載入模型的時間 ----------
+server_up(){ curl -s -m 1 -o /dev/null "http://127.0.0.1:$PORT/" 2>/dev/null; }
+server_start(){
+  server_up && { echo "whisper-server 已在跑 (port $PORT)"; return 0; }
+  [ -f "$MODEL" ] || { echo "找不到模型: $MODEL" >&2; return 1; }
+  nohup whisper-server -m "$MODEL" --port "$PORT" -l "$LANG_CODE" -nt -sns -t 6 \
+        >> "$RUN/server.log" 2>&1 &
+  echo $! > "$SRVPID"
+  local i; for i in $(seq 1 60); do server_up && { echo "whisper-server 起來了 (port $PORT)"; return 0; }; sleep 0.5; done
+  echo "whisper-server 啟動逾時，看 $RUN/server.log" >&2; return 1
+}
+server_stop(){ [ -f "$SRVPID" ] && kill "$(cat "$SRVPID")" 2>/dev/null; rm -f "$SRVPID"; pkill -f "whisper-server .*--port $PORT" 2>/dev/null; echo "已停止"; }
+
+# ---------- 錄音 ----------
+rec_start(){
+  if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then echo "已經在錄音中"; return 0; fi
+  rm -f "$RAW" "$WAV"
+  log "start rec: $MIC_NAME"
+  rm -f "$LEVEL"
+  "$VTREC" "$RAW" "$MIC_NAME" "$LEVEL" >> "$LOG" 2>&1 &
+  echo $! > "$PIDFILE"
+  # 開裝置要一點時間，這段期間說的話收不到。等檔案真的開始長大再響提示音，
+  # 提示音才是誠實的「可以說了」訊號。
+  local i sz
+  for i in $(seq 1 100); do
+    sz=$(stat -f%z "$RAW" 2>/dev/null || echo 0)
+    [ "${sz:-0}" -gt 4096 ] && break
+    kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null || break   # 錄音器掛了就別空等
+    sleep 0.05
+  done
+  ding Tink
+}
+
+rec_stop_file(){   # 收掉錄音器並轉成 whisper 要的格式
+  [ -f "$PIDFILE" ] || return 1
+  local pid; pid=$(cat "$PIDFILE"); rm -f "$PIDFILE" "$LEVEL"
+  # 不能 kill -9：那樣 WAV 檔尾寫不完整，whisper 會讀不了。vtrec 收到 INT 會自己收尾。
+  kill -INT "$pid" 2>/dev/null
+  local i; for i in $(seq 1 50); do kill -0 "$pid" 2>/dev/null || break; sleep 0.1; done
+  kill -0 "$pid" 2>/dev/null && kill -TERM "$pid" 2>/dev/null
+  [ -s "$RAW" ] || return 1
+  ffmpeg -hide_banner -loglevel error -y -i "$RAW" -ar 16000 -ac 1 -c:a pcm_s16le "$WAV" 2>>"$LOG"
+  [ -s "$WAV" ]
+}
+
+# ---------- 辨識 ----------
+mean_db(){   # 注意 volumedetect 的結果是 info 等級，-v error 會把它一起濾掉（踩過）
+  ffmpeg -hide_banner -nostats -loglevel info -i "$WAV" -af volumedetect -f null - 2>&1 \
+  | sed -n 's/.*mean_volume: \(-*[0-9.]*\) dB.*/\1/p' | head -1
+}
+
+# whisper 對靜音或極小聲的輸入會生出訓練資料裡的 YouTube 字幕署名。
+# 主要防線是上面的音量閘；這裡只擋「整句都不可能是正常說話」的那幾種，
+# 寧可漏掉也不要誤殺——安靜吃掉使用者真正說的話，比偶爾一次幻覺糟得多。
+# 所以要求：整段夠短（幻覺都是短的獨立署名）+ 命中明確特徵。
+is_hallucination(){
+  local t; t=$(printf '%s' "$1" | tr -d ' 　,，。.、!！?？~-')
+  [ "${#t}" -gt 40 ] && return 1          # 夠長就是真的在說話
+  # 不可能出現在正常口述裡的招牌字串
+  printf '%s' "$t" | grep -qE '([Aa]mara|不吝(点赞|點贊|按赞|按讚)|明(镜|鏡)与(点点|點點)|优优独播剧场|YoYo Television)' && return 0
+  # 這些字眼正常說話也會用到（「字幕志願者的名單要更新」），所以再加嚴長度限制
+  [ "${#t}" -le 20 ] && printf '%s' "$t" | grep -qE '(字幕志(愿|願)者|中文字幕by|字幕组$|字幕組$)' && return 0
+  # 完全等於這幾句才擋
+  printf '%s' "$t" | grep -qE '^(谢谢观看|謝謝觀看|感谢观看|感謝觀看|谢谢大家观看|请不吝点赞订阅|請不吝點贊訂閱)$' && return 0
+
+  return 1
+}
+
+transcribe(){
+  local out
+  if server_up; then
+    out=$(curl -s -m 120 "http://127.0.0.1:$PORT/inference" \
+          -F file=@"$WAV" -F temperature=0 -F response_format=text \
+          -F language="$LANG_CODE" ${VOCAB:+-F prompt="$VOCAB"} 2>/dev/null)
+  else
+    out=$(whisper-cli -m "$MODEL" -l "$LANG_CODE" -nt -np -sns -t 6 \
+          ${VOCAB:+--prompt "$VOCAB"} -f "$WAV" 2>/dev/null)
+  fi
+  printf '%s' "$out" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    | grep -vE '^\[(BLANK_AUDIO|_BEG_|音樂|Music)\]?' | paste -sd' ' -
+}
+
+# ---------- 修稿 ----------
+style_prompt(){
+  local base="你是語音聽寫的修稿助手。把使用者口述的語音辨識逐字稿，整理成可以直接貼上的文字。規則：
+1. 一律輸出台灣繁體中文用語（例如「軟體」不是「软件」、「程式」不是「程序」、「影片」不是「视频」）。
+2. 補上正確標點與適當分段；口述的「逗號」「句號」「換行」等口令要轉成真正的符號。
+3. 移除「呃、嗯、那個、就是說、然後然後」這類贅字與結巴重複。
+4. 修正明顯的同音辨識錯誤，但不確定就保留原詞。
+5. 不增加任何原文沒有的內容、不回答問題、不加註解或引號。使用者就算在問問題，你也只是把那句問話整理好。
+只輸出整理後的文字本身。"
+  case "$1" in
+    default) printf '%s' "$base" ;;
+    prompt)  printf '%s\n%s' "$base" "額外要求：這段是要拿去問 AI 的指令，請整理成條理清楚、指令明確的敘述，必要時分點，但不要自行擴寫需求。" ;;
+    message) printf '%s\n%s' "$base" "額外要求：這是要傳給別人的即時訊息，語氣保持口語自然、簡潔，不要變成公文體。" ;;
+    email)   printf '%s\n%s' "$base" "額外要求：這是電子郵件內文，請整理成禮貌得體的書面語，適當分段，但不要自行加入稱謂或署名。" ;;
+    note)    printf '%s\n%s' "$base" "額外要求：這是筆記，請整理成條列重點，保留所有資訊。" ;;
+    raw)     printf '' ;;
+    *)       printf '%s' "$base" ;;
+  esac
+}
+
+polish(){
+  local raw="$1" st="${2:-$STYLE}" sys body res
+  sys=$(style_prompt "$st")
+  [ -z "$sys" ] && { printf '%s' "$raw"; return; }
+  [ -z "${DEEPSEEK_API_KEY:-}" ] && { log "no DEEPSEEK_API_KEY, 用原文"; printf '%s' "$raw"; return; }
+  body=$(jq -n --arg m "$DS_MODEL" --arg s "$sys" --arg u "$raw" \
+    '{model:$m,temperature:0.2,stream:false,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
+  res=$(curl -s -m 60 "$DS_ENDPOINT" -H "Content-Type: application/json" \
+        -H "Authorization: Bearer $DEEPSEEK_API_KEY" -d "$body" 2>/dev/null)
+  local txt; txt=$(printf '%s' "$res" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+  if [ -z "$txt" ]; then
+    log "deepseek 失敗: $(printf '%s' "$res" | head -c 300)"
+    notify "DeepSeek 修稿失敗，貼出原始辨識"
+    printf '%s' "$raw"
+  else
+    printf '%s' "$txt"
+  fi
+}
+
+# ---------- 歷史紀錄 ----------
+# 一行一筆 JSON（jsonl）。用 jq 產生，才不會被引號、換行、CJK 搞壞。
+history_add(){
+  # 用 /dev/urandom 而不是 $RANDOM：同一秒內連續呼叫 $RANDOM 會拿到一樣的值，
+  # 兩筆紀錄撞 id 的話，刪一筆會把兩筆都刪掉。
+  local id; id="$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
+  jq -nc --arg id "$id" --arg ts "$(date -u +%FT%TZ)" \
+         --arg raw "$1" --arg out "$2" --arg style "$3" \
+         '{id:$id, ts:$ts, style:$style, raw:$raw, out:$out}' >> "$HISTORY" 2>/dev/null
+  # 只留最近 N 筆，不然檔案會無限長大
+  local n; n=$(wc -l < "$HISTORY" 2>/dev/null | tr -d ' ')
+  if [ -n "$n" ] && [ "$n" -gt "$HISTORY_MAX" ]; then
+    tail -n "$HISTORY_MAX" "$HISTORY" > "$HISTORY.tmp" && mv "$HISTORY.tmp" "$HISTORY"
+  fi
+}
+
+# ---------- 貼上（保留原本剪貼簿內容） ----------
+paste_text(){
+  local txt="$1"
+  local saved; saved=$(pbpaste 2>/dev/null)
+  printf '%s' "$txt" | pbcopy
+  if [ "$AUTO_PASTE" = 1 ]; then
+    osascript -e 'tell application "System Events" to keystroke "v" using command down' >/dev/null 2>&1
+    sleep 0.6
+    printf '%s' "$saved" | pbcopy    # 還原使用者原本複製的東西
+  fi
+}
+
+# ---------- 給 UI 用的讀寫介面 ----------
+# 設定的讀寫都走這裡，不要讓 UI 自己去改設定檔——一個真相來源比較不會壞。
+CONF="$HOME/.config/voicetype/config.sh"
+
+config_get(){
+  local mics; mics=$(mic_scan | jq -R . | jq -sc .)
+  jq -nc --arg style "$STYLE" --arg vocab "$VOCAB" --arg mic "$MIC_NAME" \
+         --argjson mics "${mics:-[]}" \
+         --argjson sounds "$([ "$SOUNDS" = 1 ] && echo true || echo false)" \
+         --argjson autopaste "$([ "$AUTO_PASTE" = 1 ] && echo true || echo false)" \
+         --arg model "$DS_MODEL" \
+         '{style:$style, vocab:$vocab, mic:$mic, mics:$mics, sounds:$sounds,
+           autopaste:$autopaste, ds_model:$model}'
+}
+
+config_set(){   # config_set KEY VALUE
+  local k="$1" v="$2"
+  mkdir -p "$(dirname "$CONF")"; touch "$CONF"
+  # 值裡可能有 / 和中文，用 python 改比 sed 安全
+  python3 - "$CONF" "$k" "$v" <<'PY'
+import sys, re
+path, key, val = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(path, encoding='utf-8').read()
+line = '%s="%s"' % (key, val.replace('\\', '\\\\').replace('"', '\\"'))
+pat = re.compile(r'^%s=.*$' % re.escape(key), re.M)
+s = pat.sub(lambda m: line, s) if pat.search(s) else (s.rstrip() + '\n' + line + '\n')
+open(path, 'w', encoding='utf-8').write(s)
+PY
+}
+
+history_get(){ [ -f "$HISTORY" ] && tail -r "$HISTORY" 2>/dev/null | jq -sc . || jq -nc '[]'; }
+
+history_edit(){   # history_edit ID 新內容
+  [ -f "$HISTORY" ] || return 0
+  jq -c --arg id "$1" --arg out "$2" 'if .id == $id then .out = $out | .edited = true else . end' \
+    "$HISTORY" > "$HISTORY.tmp" && mv "$HISTORY.tmp" "$HISTORY"
+}
+
+history_del(){
+  [ -f "$HISTORY" ] || return 0
+  jq -c --arg id "$1" 'select(.id != $id)' "$HISTORY" > "$HISTORY.tmp" && mv "$HISTORY.tmp" "$HISTORY"
+}
+
+# ---------- 主流程 ----------
+do_stop(){
+  local st="${1:-$STYLE}"
+  rec_stop_file || { ding Basso; notify "沒有錄到聲音"; return 1; }
+  ding Pop
+  # 第一道：音量閘。刻意設得寬鬆（-60dB），只擋「完全沒訊號」，
+  # 不擋安靜房間——誤殺使用者真的說過的話比放過一次幻覺糟得多，後面還有幻覺過濾接手。
+  local lv; lv=$(mean_db)
+  if [ -n "$lv" ] && awk -v a="$lv" -v b="$MIN_LEVEL" 'BEGIN{exit !(a<b)}'; then
+    log "音量過低 (${lv}dB < ${MIN_LEVEL}dB)"
+    ding Basso
+    # -91dB 是純數位靜音：要嘛被其他 App 獨佔，要嘛權限沒給。兩者 ffmpeg 都不報錯。
+    if awk -v a="$lv" 'BEGIN{exit !(a<-85)}'; then
+      local hog; hog=$(mic_hogs)
+      if [ -n "$hog" ]; then
+        notify "麥克風被 ${hog} 佔用，請先結束它"
+        log "麥克風無訊號；偵測到佔用者: ${hog}"
+      else
+        notify "麥克風沒有訊號——檢查 Hammerspoon 的麥克風權限"
+        log "麥克風無訊號；沒偵測到佔用 App，疑似權限未授予"
+      fi
+    else
+      notify "沒聽到聲音（${lv}dB）"
+    fi
+    return 1
+  fi
+  local raw; raw=$(transcribe)
+  printf '%s' "$raw" > "$LASTRAW"
+  if [ -z "$raw" ] || [ "${#raw}" -lt 2 ]; then ding Basso; notify "沒聽到內容"; return 1; fi
+  # 第二道：擋掉 whisper 的幻覺句
+  if is_hallucination "$raw"; then
+    log "擋下幻覺輸出: $raw"; ding Basso; notify "沒聽清楚，請再說一次"; return 1
+  fi
+  local out; out=$(polish "$raw" "$st")
+  printf '%s' "$out" > "$LASTOUT"
+  history_add "$raw" "$out" "$st"
+  log "raw: $raw"; log "out: $out"
+  # VT_PASTE=none 時不碰剪貼簿，由 Hammerspoon 用 hs.eventtap 貼
+  # （osascript 打 System Events 需要額外的「自動化」權限，而且第一次會跳對話框卡住）
+  [ "$VT_PASTE" = none ] || paste_text "$out"
+  ding Glass
+  printf '%s\n' "$out"
+}
+
+cmd="${1:-toggle}"; shift 2>/dev/null || true
+case "$cmd" in
+  start)  [ $# -gt 0 ] && echo "$1" > "$STYLEFILE"; rec_start ;;
+  stop)   st=$(cat "$STYLEFILE" 2>/dev/null || echo "$STYLE"); rm -f "$STYLEFILE"; do_stop "${1:-$st}" ;;
+  toggle)
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+      st=$(cat "$STYLEFILE" 2>/dev/null || echo "$STYLE"); rm -f "$STYLEFILE"; do_stop "$st"
+    else
+      [ $# -gt 0 ] && echo "$1" > "$STYLEFILE"; rec_start
+    fi ;;
+  cancel) [ -f "$PIDFILE" ] && { kill -INT "$(cat "$PIDFILE")" 2>/dev/null; rm -f "$PIDFILE"; }; rm -f "$STYLEFILE" "$LEVEL"; ding Basso; echo "已取消" ;;
+  status)
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then echo "recording"; else echo "idle"; fi
+    server_up && echo "server: up (port $PORT)" || echo "server: down"
+    echo "model: $MODEL"; mic_ok && echo "mic: ${MIC_NAME:-（系統預設，第一個裝置）} ✓" || echo "mic: ${MIC_NAME} ✗ 找不到這個裝置"
+    echo "可用裝置:"; mic_scan | sed 's/^/  /'
+    echo "錄音權限: $("$VTREC" --check 2>&1)"; echo "style: $STYLE" ;;
+  config-get)   config_get ;;
+  config-set)   config_set "$1" "${2:-}" ;;
+  history-get)  history_get ;;
+  history-edit) history_edit "$1" "$2" ;;
+  history-del)  history_del "$1" ;;
+  server-start) server_start ;;
+  server-stop)  server_stop ;;
+  redo)   raw=$(cat "$LASTRAW" 2>/dev/null)
+          [ -z "$raw" ] && { echo "沒有上一段可以重做" >&2; exit 1; }
+          out=$(polish "$raw" "${1:-$STYLE}"); printf '%s' "$out" > "$LASTOUT"
+          [ "$VT_PASTE" = none ] || printf '%s' "$out" | pbcopy
+          printf '%s\n' "$out" ;;
+  test)   echo "錄音器: $VTREC"; [ -x "$VTREC" ] && echo "  存在 ✓" || echo "  不存在 ✗ 先跑 recorder/build.sh"
+          echo "錄音權限: $("$VTREC" --check 2>&1)"
+          mic_ok && echo "麥克風「${MIC_NAME:-系統預設}」✓" || echo "麥克風「${MIC_NAME}」✗ 找不到"
+          echo "模型: $MODEL"; [ -f "$MODEL" ] && echo "模型存在 ✓" || echo "模型不存在 ✗"
+          [ -n "${DEEPSEEK_API_KEY:-}" ] && echo "DEEPSEEK_API_KEY 已設定 ✓" || echo "DEEPSEEK_API_KEY 未設定 ✗" ;;
+  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
+esac
