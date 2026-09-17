@@ -228,25 +228,40 @@ function renderSet(){
     </div>`;
 }
 
-// 熱鍵擷取
+// 熱鍵擷取：交給 Hammerspoon 做。
+// 網頁自己接 keydown 是行不通的——⌥Space 這類組合已經被全域熱鍵綁走，
+// 按下去網頁根本收不到事件，使用者只會看到「點了沒反應」。
 let capturing = null;
-document.addEventListener("keydown", e => {
+
+function setCapUI(k, text, rec){
+  const el = document.querySelector(`[data-hk="${k}"]`);
+  if (el){ el.textContent = text; el.classList.toggle("rec", !!rec); }
+}
+
+function beginCapture(k){
+  if (capturing) setCapUI(capturing, prettyHK(CFG.hotkeys?.[capturing]), false);
+  capturing = k;
+  document.querySelectorAll(".cap").forEach(x => x.classList.remove("rec"));
+  setCapUI(k, "按下你要的組合鍵…（Esc 取消）", true);
+  document.getElementById("savenote").textContent = "熱鍵至少要有一個修飾鍵：⌘ ⌥ ⌃ ⇧";
+  send("capture-start");
+}
+
+// Hammerspoon 擷取到之後呼叫這個；null = 取消或逾時
+window.vtCaptured = combo => {
   if (!capturing) return;
-  e.preventDefault(); e.stopPropagation();
-  if (["Shift","Control","Alt","Meta"].includes(e.key)) return;
-  const mods = [];
-  if (e.ctrlKey) mods.push("ctrl");
-  if (e.altKey) mods.push("alt");
-  if (e.shiftKey) mods.push("shift");
-  if (e.metaKey) mods.push("cmd");
-  let key = e.code.replace(/^Key|^Digit/, "").toLowerCase();
-  if (e.code === "Space") key = "space";
-  if (!mods.length) { document.getElementById("savenote").textContent = "至少要有一個修飾鍵（⌘⌥⌃⇧），否則會攔到你正常打字。"; return; }
-  CFG.hotkeys[capturing] = mods.join("+") + "+" + key;
-  const el = document.querySelector(`[data-hk="${capturing}"]`);
-  el.textContent = prettyHK(CFG.hotkeys[capturing]); el.classList.remove("rec");
-  capturing = null;
-}, true);
+  const k = capturing; capturing = null;
+  if (combo){
+    CFG.hotkeys[k] = combo;
+    document.getElementById("savenote").textContent = "改好了，記得按「儲存設定」。";
+  }
+  setCapUI(k, prettyHK(CFG.hotkeys?.[k]), false);
+};
+
+window.vtCaptureError = () => {
+  document.getElementById("savenote").textContent =
+    "這個組合沒有修飾鍵，會攔到你正常打字。請加上 ⌘ ⌥ ⌃ ⇧ 其中一個。";
+};
 
 document.addEventListener("click", ev => {
   const t = ev.target;
@@ -257,9 +272,22 @@ document.addEventListener("click", ev => {
     document.getElementById("search").style.visibility = t.dataset.t === "hist" ? "visible" : "hidden";
     return;
   }
-  if (t.dataset.hk){
-    document.querySelectorAll(".cap").forEach(x => x.classList.remove("rec"));
-    t.classList.add("rec"); t.textContent = "按下你要的組合鍵…"; capturing = t.dataset.hk; return;
+  if (t.dataset.hk){ beginCapture(t.dataset.hk); return; }
+  if (capturing){   // 點別的地方 = 放棄這次擷取
+    const k = capturing; capturing = null;
+    send("capture-stop"); setCapUI(k, prettyHK(CFG.hotkeys?.[k]), false);
+  }
+  // 儲存按鈕沒有 data-a，必須擋在 !a 的提前 return 之前判斷，
+  // 否則點了完全沒反應（踩過）
+  if (t.id === "dosave"){
+    CFG.style = document.getElementById("style").value;
+    CFG.vocab = document.getElementById("vocab").value;
+    CFG.mic   = document.getElementById("mic").value;
+    CFG.sounds = document.getElementById("sounds").checked;
+    CFG.autopaste = document.getElementById("autopaste").checked;
+    document.getElementById("savenote").textContent = "儲存中…";
+    send("settings", CFG);
+    return;
   }
   const a = t.dataset.a;
   if (!a) return;
@@ -273,15 +301,6 @@ document.addEventListener("click", ev => {
   }
   else if (a === "copy"){ const e = HIST.find(x => x.id === id); send("copy", { text: e.out }); t.textContent = "已複製"; setTimeout(() => t.textContent = "複製", 1200); }
   else if (a === "del"){ HIST = HIST.filter(x => x.id !== id); renderHist(); send("delete", { id }); }
-  else if (t.id === "dosave"){
-    CFG.style = document.getElementById("style").value;
-    CFG.vocab = document.getElementById("vocab").value;
-    CFG.mic   = document.getElementById("mic").value;
-    CFG.sounds = document.getElementById("sounds").checked;
-    CFG.autopaste = document.getElementById("autopaste").checked;
-    document.getElementById("savenote").textContent = "已儲存";
-    send("settings", CFG);
-  }
 });
 document.getElementById("search").addEventListener("input", renderHist);
 

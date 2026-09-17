@@ -38,6 +38,7 @@ local function parseHK(str)
 end
 
 local HK = readHotkeys()
+local boundHotkeys = {}   -- 擷取新熱鍵時要能把這些暫時關掉
 local TAP_MAX  = 0.35   -- 秒：低於這個時間放開 = 鎖定錄音，不是誤觸
 local style    = "default"
 
@@ -368,7 +369,7 @@ end
 -- ⌥Space：按住說話 / 短按鎖定
 ----------------------------------------------------------------
 local _pushMods, _pushKey = parseHK(HK.push)
-hs.hotkey.bind(_pushMods, _pushKey,
+boundHotkeys[#boundHotkeys + 1] = hs.hotkey.bind(_pushMods, _pushKey,
   function()  -- 按下
     if state == "latched" then          -- 鎖定中，這一下是結束
       stopRec()
@@ -394,7 +395,7 @@ hs.hotkey.bind(_pushMods, _pushKey,
 -- ⌥⇧Space：單純切換
 ----------------------------------------------------------------
 local _tgMods, _tgKey = parseHK(HK.toggle)
-hs.hotkey.bind(_tgMods, _tgKey, function()
+boundHotkeys[#boundHotkeys + 1] = hs.hotkey.bind(_tgMods, _tgKey, function()
   if state == "idle" then
     state = "latched"; render()
     overlayShow("再按一下結束　·　Esc 取消")
@@ -420,7 +421,7 @@ chooser:choices(rows)
 chooser:rows(#rows)
 
 local _stMods, _stKey = parseHK(HK.style)
-hs.hotkey.bind(_stMods, _stKey, function() chooser:show() end)
+boundHotkeys[#boundHotkeys + 1] = hs.hotkey.bind(_stMods, _stKey, function() chooser:show() end)
 
 -- Esc 取消錄音（用 eventtap，只在錄音中才吃掉這個鍵）
 local escWatcher = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
@@ -479,6 +480,59 @@ local function saveSettings(c)
   next_()
 end
 
+
+-- 擷取新熱鍵。
+-- 不能讓網頁自己用 keydown 接：⌥Space 這類組合已經被 hs.hotkey 全域綁走，
+-- 網頁根本收不到那個按鍵，使用者會覺得「點了沒反應」。
+-- 所以擷取期間把既有熱鍵全部停用，改用 eventtap 直接接。
+local captureTap, captureTimer
+local function stopCapture()
+  if captureTap then captureTap:stop(); captureTap = nil end
+  if captureTimer then captureTimer:stop(); captureTimer = nil end
+  for _, hk in ipairs(boundHotkeys) do pcall(function() hk:enable() end) end
+end
+
+local function startCapture()
+  for _, hk in ipairs(boundHotkeys) do pcall(function() hk:disable() end) end
+  if captureTap then captureTap:stop() end
+  local MODS_ONLY = { cmd = true, alt = true, shift = true, ctrl = true,
+                      rightcmd = true, rightalt = true, rightshift = true, rightctrl = true,
+                      capslock = true, fn = true }
+  captureTap = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
+    local name = hs.keycodes.map[e:getKeyCode()]
+    if not name then return true end
+    if MODS_ONLY[name] then return true end          -- 只按修飾鍵，繼續等
+    if name == "escape" then
+      stopCapture()
+      if uiWin then uiWin:evaluateJavaScript("window.vtCaptured(null)") end
+      return true
+    end
+    local f = e:getFlags()
+    local mods = {}
+    if f.ctrl then mods[#mods + 1] = "ctrl" end
+    if f.alt then mods[#mods + 1] = "alt" end
+    if f.shift then mods[#mods + 1] = "shift" end
+    if f.cmd then mods[#mods + 1] = "cmd" end
+    if #mods == 0 then
+      -- 沒有修飾鍵的話會攔截正常打字，不能接受
+      if uiWin then uiWin:evaluateJavaScript("window.vtCaptureError()") end
+      return true
+    end
+    local combo = table.concat(mods, "+") .. "+" .. name
+    stopCapture()
+    -- 直接組字串，不要用 hs.json.encode：它對「純字串」（非 table）的回傳不可靠，
+    -- 送出去的 JS 會是壞的，網頁端就什麼都沒發生。combo 只有 [a-z+]，安全。
+    if uiWin then uiWin:evaluateJavaScript('window.vtCaptured("' .. combo .. '")') end
+    return true
+  end)
+  captureTap:start()
+  -- 忘了按會一直停用熱鍵，10 秒自動放棄
+  captureTimer = hs.timer.doAfter(10, function()
+    stopCapture()
+    if uiWin then uiWin:evaluateJavaScript("window.vtCaptured(null)") end
+  end)
+end
+
 local function onUIMessage(msg)
   local b = (msg and msg.body) or {}
   local a, p = b.action, b.payload or {}
@@ -487,6 +541,8 @@ local function onUIMessage(msg)
   elseif a == "delete" then vt({ "history-del", p.id })
   elseif a == "copy" then hs.pasteboard.setContents(p.text or "")
   elseif a == "settings" then saveSettings(p)
+  elseif a == "capture-start" then startCapture()
+  elseif a == "capture-stop" then stopCapture()
   end
 end
 
@@ -503,11 +559,12 @@ local function showUI()
   uiWin:allowTextEntry(true)      -- 沒有這行，網頁裡的輸入框打不了字
   uiWin:darkMode(true)
   uiWin:url("file://" .. UI_HTML)
+  uiWin:windowCallback(function(action) if action == "closing" then stopCapture() end end)
   uiWin:show():bringToFront()
 end
 
 local _uiMods, _uiKey = parseHK(HK.ui)
-hs.hotkey.bind(_uiMods, _uiKey, showUI)
+boundHotkeys[#boundHotkeys + 1] = hs.hotkey.bind(_uiMods, _uiKey, showUI)
 
 ----------------------------------------------------------------
 -- 選單列點擊 = 手動選單
@@ -577,6 +634,7 @@ else
     informativeText = "按住 " .. (HK.push and "⌥Space" or "") ..
                       " 說話　·　⌥⌘H 開啟歷史紀錄與設定" }):send()
 end
+
 
 
 
