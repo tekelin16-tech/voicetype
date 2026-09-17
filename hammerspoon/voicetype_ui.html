@@ -210,6 +210,16 @@ function renderSet(){
       <textarea id="vocab">${esc(CFG.vocab||"")}</textarea>
     </div>
 
+    <div class="fld"><label>修正字典</label>
+      <div class="help">
+        同音字（國翔／國祥）光靠上面的熱詞表壓不住，辨識選哪個字是機率問題。<br>
+        這裡一行一條，兩種寫法：<br>
+        <code>國翔</code> — 告訴 AI 這是專有名詞，聽到音近的就往這邊修<br>
+        <code>國祥→國翔</code> — 不管前面怎麼判，最後一定換掉（最保險）
+      </div>
+      <textarea id="corr" style="min-height:96px;font-family:ui-monospace,Menlo,monospace">${esc(CFG.corrections||"")}</textarea>
+    </div>
+
     <div class="fld"><label>麥克風</label>
       <select id="mic">
         <option value="">（系統第一個裝置）</option>
@@ -280,9 +290,20 @@ document.addEventListener("click", ev => {
   // 儲存按鈕沒有 data-a，必須擋在 !a 的提前 return 之前判斷，
   // 否則點了完全沒反應（踩過）
   if (t.id === "dosave"){
+    // 兩個功能用同一組熱鍵的話，後綁的那個會靜默失敗
+    const hks = Object.entries(CFG.hotkeys || {});
+    const dup = hks.find(([k, v], i) => hks.findIndex(([, v2]) => v2 === v) !== i);
+    if (dup){
+      const names = hks.filter(([, v]) => v === dup[1]).map(([k]) =>
+        (HOTKEYS.find(h => h[0] === k) || [k, k])[1]);
+      document.getElementById("savenote").textContent =
+        "「" + names.join("」和「") + "」設成了同一組 " + prettyHK(dup[1]) + "，其中一個會失效。請改掉再儲存。";
+      return;
+    }
     CFG.style = document.getElementById("style").value;
     CFG.vocab = document.getElementById("vocab").value;
     CFG.mic   = document.getElementById("mic").value;
+    CFG.corrections = document.getElementById("corr").value;
     CFG.sounds = document.getElementById("sounds").checked;
     CFG.autopaste = document.getElementById("autopaste").checked;
     document.getElementById("savenote").textContent = "儲存中…";

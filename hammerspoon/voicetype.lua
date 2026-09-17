@@ -455,13 +455,16 @@ local function pushToUI()
   if not uiWin then return end
   vt({ "history-get" }, function(_, hist)
     vt({ "config-get" }, function(_, conf)
-      local data = {
-        history = (hs.json.decode(hist or "[]") or {}),
-        config  = (hs.json.decode(conf or "{}") or {}),
-      }
-      data.config.hotkeys = readHotkeys()
-      local js = "window.vtReceive(" .. hs.json.encode(data) .. ")"
-      if uiWin then uiWin:evaluateJavaScript(js) end
+      vt({ "corr-get" }, function(_, corr)
+        local data = {
+          history = (hs.json.decode(hist or "[]") or {}),
+          config  = (hs.json.decode(conf or "{}") or {}),
+        }
+        data.config.hotkeys = readHotkeys()
+        data.config.corrections = corr or ""
+        local js = "window.vtReceive(" .. hs.json.encode(data) .. ")"
+        if uiWin then uiWin:evaluateJavaScript(js) end
+      end)
     end)
   end)
 end
@@ -478,6 +481,9 @@ local function saveSettings(c)
   local i = 1
   local function next_()
     if i > #pairsToSet then
+      -- 修正字典可能很長且有換行，用 stdin 餵給 vt.sh
+      local t = hs.task.new("/bin/bash", nil, { VT, "corr-set" })
+      t:setEnvironment(ENV); t:setInput(c.corrections or ""); t:start()
       -- 熱鍵存成 JSON，然後重載才會生效
       local f = io.open(HK_FILE, "w")
       if f then f:write(hs.json.encode(c.hotkeys or DEFAULT_HK)); f:close() end
@@ -663,6 +669,7 @@ else
     informativeText = "按住 " .. (HK.push and "⌥Space" or "") ..
                       " 說話　·　⌥⌘H 開啟歷史紀錄與設定" }):send()
 end
+
 
 
 

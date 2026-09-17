@@ -5,6 +5,7 @@ set -uo pipefail
 export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
 
 CONF="$HOME/.config/voicetype/config.sh"
+CORR="$HOME/.config/voicetype/corrections.txt"
 [ -f "$CONF" ] && . "$CONF"
 
 : "${MIC_NAME:=}"        # 空的 = 用系統列出的第一個裝置
@@ -137,8 +138,61 @@ transcribe(){
     | grep -vE '^\[(BLANK_AUDIO|_BEG_|音樂|Music)\]?' | paste -sd' ' -
 }
 
+# ---------- 修正字典 ----------
+# 同音字（國翔／國祥）光靠熱詞表壓不住，whisper 選哪個字是機率問題。
+# 所以分兩層：熱詞表幫 whisper 提高命中率，修正字典在事後把漏網的改掉。
+# 格式：一行一條，「國翔」= 告訴 DeepSeek 這是專有名詞；
+#      「國祥→國翔」= 不管前面怎麼判，最後強制替換。
+corr_terms(){   # 取出所有「正確的那一邊」，餵給 DeepSeek 當專有名詞清單
+  [ -f "$CORR" ] || return
+  python3 -c '
+import sys, io
+seen, out = set(), []
+for line in io.open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    for sep in ("\u2192", "->"):
+        if sep in line:
+            line = line.split(sep, 1)[1].strip()
+            break
+    if line and line not in seen:
+        seen.add(line); out.append(line)
+sys.stdout.write("\u3001".join(out))
+' "$CORR"
+}
+
+corr_apply(){   # 套用明確的替換規則
+  # 注意：不能用 heredoc 餵 python 腳本——stdin 會被腳本本身用掉，
+  # 要處理的文字就讀不到了（踩過，結果是整段輸出消失）。改用 -c 加檔案參數。
+  [ -f "$CORR" ] || { cat; return; }
+  local tmp="$RUN/corr_in.txt"; cat > "$tmp"
+  python3 -c '
+import sys, io
+rules = []
+for line in io.open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    for sep in ("\u2192", "->"):
+        if sep in line:
+            a, b = line.split(sep, 1)
+            a, b = a.strip(), b.strip()
+            if a and b:
+                rules.append((a, b))
+            break
+txt = io.open(sys.argv[2], encoding="utf-8").read()
+# 長的先換，免得短規則把長規則的字先吃掉
+for a, b in sorted(rules, key=lambda r: -len(r[0])):
+    txt = txt.replace(a, b)
+sys.stdout.write(txt)
+' "$CORR" "$tmp"
+  rm -f "$tmp"
+}
+
 # ---------- 修稿 ----------
 style_prompt(){
+  local terms; terms=$(corr_terms)
   local base="你是語音聽寫的修稿助手。把使用者口述的語音辨識逐字稿，整理成可以直接貼上的文字。規則：
 1. 一律輸出台灣繁體中文用語（例如「軟體」不是「软件」、「程式」不是「程序」、「影片」不是「视频」）。
 2. 補上正確標點與適當分段；口述的「逗號」「句號」「換行」等口令要轉成真正的符號。
@@ -146,6 +200,9 @@ style_prompt(){
 4. 修正明顯的同音辨識錯誤，但不確定就保留原詞。
 5. 不增加任何原文沒有的內容、不回答問題、不加註解或引號。使用者就算在問問題，你也只是把那句問話整理好。
 只輸出整理後的文字本身。"
+  [ -n "$terms" ] && base="${base}
+使用者常用的專有名詞（人名、品牌、術語）：${terms}
+逐字稿裡若出現與這些詞同音或音近的字，請一律改成上面的寫法。"
   case "$1" in
     default) printf '%s' "$base" ;;
     prompt)  printf '%s\n%s' "$base" "額外要求：這段是要拿去問 AI 的指令，請整理成條理清楚、指令明確的敘述，必要時分點，但不要自行擴寫需求。" ;;
@@ -207,6 +264,7 @@ paste_text(){
 # ---------- 給 UI 用的讀寫介面 ----------
 # 設定的讀寫都走這裡，不要讓 UI 自己去改設定檔——一個真相來源比較不會壞。
 CONF="$HOME/.config/voicetype/config.sh"
+CORR="$HOME/.config/voicetype/corrections.txt"
 
 config_get(){
   local mics; mics=$(mic_scan | jq -R . | jq -sc .)
@@ -233,6 +291,9 @@ s = pat.sub(lambda m: line, s) if pat.search(s) else (s.rstrip() + '\n' + line +
 open(path, 'w', encoding='utf-8').write(s)
 PY
 }
+
+corr_get(){ [ -f "$CORR" ] && cat "$CORR" || true; }
+corr_set(){ mkdir -p "$(dirname "$CORR")"; cat > "$CORR"; [ -s "$CORR" ] && [ "$(tail -c1 "$CORR")" != "" ] && printf '\n' >> "$CORR"; true; }
 
 history_get(){ [ -f "$HISTORY" ] && tail -r "$HISTORY" 2>/dev/null | jq -sc . || jq -nc '[]'; }
 
@@ -280,7 +341,7 @@ do_stop(){
   if is_hallucination "$raw"; then
     log "擋下幻覺輸出: $raw"; ding Basso; notify "沒聽清楚，請再說一次"; return 1
   fi
-  local out; out=$(polish "$raw" "$st")
+  local out; out=$(polish "$raw" "$st" | corr_apply)
   printf '%s' "$out" > "$LASTOUT"
   history_add "$raw" "$out" "$st"
   log "raw: $raw"; log "out: $out"
@@ -308,6 +369,8 @@ case "$cmd" in
     echo "model: $MODEL"; mic_ok && echo "mic: ${MIC_NAME:-（系統預設，第一個裝置）} ✓" || echo "mic: ${MIC_NAME} ✗ 找不到這個裝置"
     echo "可用裝置:"; mic_scan | sed 's/^/  /'
     echo "錄音權限: $("$VTREC" --check 2>&1)"; echo "style: $STYLE" ;;
+  corr-get)     corr_get ;;
+  corr-set)     corr_set ;;
   config-get)   config_get ;;
   config-set)   config_set "$1" "${2:-}" ;;
   history-get)  history_get ;;
@@ -317,7 +380,7 @@ case "$cmd" in
   server-stop)  server_stop ;;
   redo)   raw=$(cat "$LASTRAW" 2>/dev/null)
           [ -z "$raw" ] && { echo "沒有上一段可以重做" >&2; exit 1; }
-          out=$(polish "$raw" "${1:-$STYLE}"); printf '%s' "$out" > "$LASTOUT"
+          out=$(polish "$raw" "${1:-$STYLE}" | corr_apply); printf '%s' "$out" > "$LASTOUT"
           [ "$VT_PASTE" = none ] || printf '%s' "$out" | pbcopy
           printf '%s\n' "$out" ;;
   test)   echo "錄音器: $VTREC"; [ -x "$VTREC" ] && echo "  存在 ✓" || echo "  不存在 ✗ 先跑 recorder/build.sh"
@@ -325,5 +388,5 @@ case "$cmd" in
           mic_ok && echo "麥克風「${MIC_NAME:-系統預設}」✓" || echo "麥克風「${MIC_NAME}」✗ 找不到"
           echo "模型: $MODEL"; [ -f "$MODEL" ] && echo "模型存在 ✓" || echo "模型不存在 ✗"
           [ -n "${DEEPSEEK_API_KEY:-}" ] && echo "DEEPSEEK_API_KEY 已設定 ✓" || echo "DEEPSEEK_API_KEY 未設定 ✗" ;;
-  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
+  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|corr-get|corr-set|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
 esac
