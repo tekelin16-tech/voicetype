@@ -16,8 +16,10 @@ local HK_FILE  = HOME .. "/.config/voicetype/hotkeys.json"
 local UI_HTML  = HOME .. "/.hammerspoon/voicetype_ui.html"
 
 -- 熱鍵可以在設定視窗裡改，存成 JSON。改完要 hs.reload() 才會生效。
+-- 注意：alt+cmd+space 被 macOS 佔走（Finder 搜尋視窗），hs.hotkey.bind 會回傳 nil
+-- 而且不報錯。實測可用的有 ctrl+alt+space、ctrl+cmd+space、alt+cmd+[vjkh]。
 local DEFAULT_HK = { push = "alt+space", toggle = "alt+shift+space",
-                     style = "alt+cmd+space", ui = "alt+cmd+h" }
+                     style = "ctrl+alt+space", ui = "alt+cmd+h" }
 
 local function readHotkeys()
   local f = io.open(HK_FILE, "r")
@@ -39,6 +41,17 @@ end
 
 local HK = readHotkeys()
 local boundHotkeys = {}   -- 擷取新熱鍵時要能把這些暫時關掉
+local hkFailed = {}       -- 綁不到的熱鍵，最後統一通知使用者
+
+-- hs.hotkey.bind 在組合被系統或別的 app 佔走時「回傳 nil 且不報錯」。
+-- 沒有這層包裝的話，使用者只會發現某個熱鍵按了沒反應，完全查不出原因。
+local function bindHK(label, str, ...)
+  local mods, key = parseHK(str)
+  local hk = hs.hotkey.bind(mods, key, ...)
+  if hk then boundHotkeys[#boundHotkeys + 1] = hk
+  else hkFailed[#hkFailed + 1] = label .. "（" .. tostring(str) .. "）" end
+  return hk
+end
 local TAP_MAX  = 0.35   -- 秒：低於這個時間放開 = 鎖定錄音，不是誤觸
 local style    = "default"
 
@@ -368,8 +381,7 @@ end
 ----------------------------------------------------------------
 -- ⌥Space：按住說話 / 短按鎖定
 ----------------------------------------------------------------
-local _pushMods, _pushKey = parseHK(HK.push)
-boundHotkeys[#boundHotkeys + 1] = hs.hotkey.bind(_pushMods, _pushKey,
+bindHK("按住說話", HK.push,
   function()  -- 按下
     if state == "latched" then          -- 鎖定中，這一下是結束
       stopRec()
@@ -394,8 +406,7 @@ boundHotkeys[#boundHotkeys + 1] = hs.hotkey.bind(_pushMods, _pushKey,
 ----------------------------------------------------------------
 -- ⌥⇧Space：單純切換
 ----------------------------------------------------------------
-local _tgMods, _tgKey = parseHK(HK.toggle)
-boundHotkeys[#boundHotkeys + 1] = hs.hotkey.bind(_tgMods, _tgKey, function()
+bindHK("切換錄音", HK.toggle, function()
   if state == "idle" then
     state = "latched"; render()
     overlayShow("再按一下結束　·　Esc 取消")
@@ -420,8 +431,7 @@ end
 chooser:choices(rows)
 chooser:rows(#rows)
 
-local _stMods, _stKey = parseHK(HK.style)
-boundHotkeys[#boundHotkeys + 1] = hs.hotkey.bind(_stMods, _stKey, function() chooser:show() end)
+bindHK("選修稿風格", HK.style, function() chooser:show() end)
 
 -- Esc 取消錄音（用 eventtap，只在錄音中才吃掉這個鍵）
 local escWatcher = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
@@ -547,7 +557,16 @@ local function onUIMessage(msg)
 end
 
 local function showUI()
-  if uiWin then uiWin:show():bringToFront(); pushToUI(); return end
+  -- 關掉的視窗要能再叫出來：hs.webview 按紅點關閉時物件就被銷毀了，
+  -- 但變數還指著那個死掉的東西，如果不清掉，之後 showUI 會走「已經有視窗」
+  -- 的提前返回而什麼都不做——症狀就是「點了選單列沒反應」。
+  if uiWin then
+    local alive = pcall(function() return uiWin:hswindow() end)
+    if alive and uiWin:hswindow() then
+      uiWin:show():bringToFront(); pushToUI(); return
+    end
+    uiWin = nil; uiCtrl = nil
+  end
   uiCtrl = hs.webview.usercontent.new("voicetype")
   uiCtrl:setCallback(onUIMessage)
   local scr = hs.screen.mainScreen():frame()
@@ -559,12 +578,16 @@ local function showUI()
   uiWin:allowTextEntry(true)      -- 沒有這行，網頁裡的輸入框打不了字
   uiWin:darkMode(true)
   uiWin:url("file://" .. UI_HTML)
-  uiWin:windowCallback(function(action) if action == "closing" then stopCapture() end end)
+  uiWin:windowCallback(function(action)
+    if action == "closing" then
+      stopCapture()          -- 關窗時一定要把熱鍵放回來，否則整個工具就啞了
+      uiWin = nil; uiCtrl = nil
+    end
+  end)
   uiWin:show():bringToFront()
 end
 
-local _uiMods, _uiKey = parseHK(HK.ui)
-boundHotkeys[#boundHotkeys + 1] = hs.hotkey.bind(_uiMods, _uiKey, showUI)
+bindHK("歷史紀錄與設定", HK.ui, showUI)
 
 ----------------------------------------------------------------
 -- 選單列點擊 = 手動選單
@@ -625,6 +648,12 @@ hs.timer.doAfter(3, function() vt({ "server-start" }) end)
 
 -- 第一次安裝時把說明視窗打開。找不到介面是最容易讓人放棄的一關，
 -- 與其等他自己發現選單列，不如直接開給他看。
+if #hkFailed > 0 then
+  hs.notify.new({ title = "VoiceType：這些熱鍵綁不到",
+    informativeText = table.concat(hkFailed, "、") .. " — 已被系統或其他程式佔用，請到設定換一組",
+    withdrawAfter = 0 }):send()
+end
+
 local FIRST_RUN = HOME .. "/.config/voicetype/.onboarded"
 if not io.open(FIRST_RUN, "r") then
   local f = io.open(FIRST_RUN, "w"); if f then f:write(os.date()); f:close() end
