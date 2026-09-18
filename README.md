@@ -34,7 +34,8 @@ DeepSeek 負責的是真正有價值的那一半——加標點、去贅字、�
 | `⌥Space` | **按住說話**，放開就轉錄貼上 |
 | `⌥Space` 短按一下 | 改成**鎖定錄音**（不用一直按著），再按一下結束 |
 | `⌥⇧Space` | 單純切換錄音，長篇口述用 |
-| `⌥⌘Space` | 選這次的修稿風格 |
+| `⌃⌥Space` | 選這次的修稿風格 |
+| `⌥⌘H` | 開啟歷史紀錄與設定視窗 |
 | `Esc` | 錄音中按 = 取消，不辨識不貼上 |
 
 選單列：`🎙 待命` → `🔴 錄音中` → `⏳ 轉錄中`
@@ -172,6 +173,21 @@ ffmpeg -hide_banner -nostats -loglevel info -i /tmp/t.wav -af volumedetect -f nu
 ```
 參考值：**-91dB = 沒訊號**、**-41dB = 安靜房間**、**-15dB = 正常說話**。
 
+## 換成自己的 Logo
+
+放這兩個檔案就會生效，不用改程式：
+
+| 檔案 | 規格 | 用在哪 |
+|---|---|---|
+| `~/.config/voicetype/logo.png` | 512×512 PNG，透明背景 | 設定視窗標頭 |
+| `~/.config/voicetype/menubar.png` | 44×44 PNG，**純黑＋透明** | 選單列 |
+
+⚠️ 選單列那張一定要是**單色**（純黑，其餘透明）。macOS 的 template 模式會自動
+處理深色／淺色選單列的反色——放彩色圖的話，在深色選單列上會變成一團黑。
+
+改完從選單列點「重新載入設定」。內建的圖示是用 `assets/make-logo.py` 產的，
+想調整波形或顏色可以改那個腳本重跑。
+
 ## 需要的系統權限
 
 系統設定 → 隱私權與安全性：
@@ -228,12 +244,36 @@ ffmpeg -hide_banner -nostats -loglevel info -i /tmp/t.wav -af volumedetect -f nu
 
 ## 檔案
 
+安裝後：
+
 ```
-~/Desktop/claude日常/voicetype/
-  vt.sh          引擎：錄音 → 辨識 → 修稿 → 貼上
-  set-key.sh     把 DeepSeek key 存進 Keychain
-  README.md
-~/.config/voicetype/config.sh    設定
-~/.hammerspoon/init.lua          熱鍵與選單列
-~/.cache/voicetype/              錄音暫存、記錄檔、上一段原文與結果
+~/.local/share/voicetype/
+  vt.sh                    引擎：錄音 → 辨識 → 修稿 → 貼上
+  set-key.sh               把 DeepSeek key 存進 Keychain
+  uninstall.sh             移除
+  recorder/
+    main.swift             錄音器原始碼
+    build.sh               改完 swift 跑這個重建
+    VoiceTypeRec.app       有 bundle 才拿得到麥克風權限的錄音器
+
+~/.hammerspoon/
+  init.lua                 只會被加一行 require("voicetype")，你原本的設定不動
+  voicetype.lua            熱鍵、選單列、錄音面板、設定視窗
+  voicetype_ui.html        歷史紀錄與設定的介面
+
+~/.config/voicetype/
+  config.sh                麥克風、模型、熱詞表、風格、音量閘
+  hotkeys.json             熱鍵
+  corrections.txt          修正字典
+
+~/.cache/voicetype/
+  models/                  辨識模型（1.5GB）
+  history.jsonl            歷史紀錄
+  vt.log                   記錄，出問題先看這個
+  panel_pos                錄音面板的位置
 ```
+
+## 開發
+
+這個 repo 就是原始碼。改完跑 `./install.sh` 就會裝到上面那些位置
+（設定檔不會被蓋掉）。改過 `recorder/main.swift` 要另外跑 `recorder/build.sh`。

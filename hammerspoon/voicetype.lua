@@ -21,6 +21,19 @@ local VT       = HOME .. "/.local/share/voicetype/vt.sh"
 local HK_FILE  = HOME .. "/.config/voicetype/hotkeys.json"
 local UI_HTML  = HOME .. "/.hammerspoon/voicetype_ui.html"
 
+-- 圖示：使用者自己的優先，否則用內建的。放這兩個檔就會換掉：
+--   ~/.config/voicetype/logo.png      512x512 PNG，透明背景
+--   ~/.config/voicetype/menubar.png   44x44 PNG，純黑＋透明（選單列會自動反色）
+local function findAsset(name)
+  for _, dir in ipairs({ HOME .. "/.config/voicetype/", HOME .. "/.local/share/voicetype/assets/" }) do
+    local f = io.open(dir .. name, "r")
+    if f then f:close(); return dir .. name end
+  end
+  return nil
+end
+local LOGO_PATH    = findAsset("logo.png")
+local MENUBAR_PATH = findAsset("menubar.png")
+
 -- 熱鍵可以在設定視窗裡改，存成 JSON。改完要 hs.reload() 才會生效。
 -- 注意：alt+cmd+space 被 macOS 佔走（Finder 搜尋視窗），hs.hotkey.bind 會回傳 nil
 -- 而且不報錯。實測可用的有 ctrl+alt+space、ctrl+cmd+space、alt+cmd+[vjkh]。
@@ -88,11 +101,24 @@ local function styleName()
   return style
 end
 
+local menubarIcon
+if MENUBAR_PATH then
+  local img = hs.image.imageFromPath(MENUBAR_PATH)
+  -- template(true) 讓 macOS 自己處理深色／淺色選單列的反色。
+  -- 沒設的話彩色圖在深色選單列上會變成一團黑。
+  if img then menubarIcon = img:setSize({ w = 18, h = 18 }):template(true) end
+end
+
 local function render()
   if not bar then return end
-  local icon = ({ idle = "🎙", holding = "🔴", latched = "🔴", working = "⏳" })[state] or "🎙"
   local label = ({ idle = "", holding = " 錄音中", latched = " 錄音中(鎖定)", working = " 轉錄中" })[state] or ""
-  bar:setTitle(icon .. label)
+  if menubarIcon then
+    bar:setIcon(menubarIcon)
+    bar:setTitle(label ~= "" and label or nil)
+  else
+    local emoji = ({ idle = "🎙", holding = "🔴", latched = "🔴", working = "⏳" })[state] or "🎙"
+    bar:setTitle(emoji .. label)
+  end
   bar:setTooltip("VoiceType — 風格：" .. styleName())
 end
 
@@ -479,6 +505,13 @@ local function pushToUI()
         }
         data.config.hotkeys = readHotkeys()
         data.config.corrections = corr or ""
+        if LOGO_PATH then
+          local f = io.open(LOGO_PATH, "rb")
+          if f then
+            local bytes = f:read("*a"); f:close()
+            data.config.logo = "data:image/png;base64," .. hs.base64.encode(bytes)
+          end
+        end
         local js = "window.vtReceive(" .. hs.json.encode(data) .. ")"
         if uiWin then uiWin:evaluateJavaScript(js) end
       end)

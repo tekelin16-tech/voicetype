@@ -15,6 +15,7 @@
        background:var(--bg);color:var(--txt);-webkit-user-select:none}
   header{position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line);
          padding:10px 16px;display:flex;gap:8px;align-items:center;z-index:10}
+  #logo{width:20px;height:20px;border-radius:5px;flex-shrink:0}
   .tab{padding:5px 12px;border-radius:7px;cursor:pointer;color:var(--dim);font-weight:600}
   .tab.on{background:var(--chip);color:var(--txt)}
   #search{margin-left:auto;padding:5px 10px;border:1px solid var(--line);border-radius:7px;
@@ -61,6 +62,7 @@
 </style>
 
 <header>
+  <img id="logo" alt="" hidden>
   <div class="tab on" data-t="hist">歷史紀錄</div>
   <div class="tab" data-t="set">設定</div>
   <input id="search" placeholder="搜尋…">
@@ -328,7 +330,11 @@ document.getElementById("search").addEventListener("input", renderHist);
 // Lua 呼叫這個把資料送進來
 window.vtReceive = data => {
   // 設定一定要先設好：上手說明裡要顯示熱鍵，先渲染歷史的話會變成「（未設定）」
-  if (data.config)  { CFG = data.config; CFG.hotkeys = CFG.hotkeys || {}; renderSet(); }
+  if (data.config)  {
+    CFG = data.config; CFG.hotkeys = CFG.hotkeys || {}; renderSet();
+    const lg = document.getElementById("logo");
+    if (CFG.logo){ lg.src = CFG.logo; lg.hidden = false; } else { lg.hidden = true; }
+  }
   if (data.history) { HIST = data.history; renderHist(); }
 };
 send("ready");

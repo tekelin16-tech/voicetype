@@ -3,6 +3,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>VoiceType — 語音聽寫</title>
+<link rel="icon" type="image/png" href="assets/logo.png">
+<link rel="apple-touch-icon" href="assets/logo.png">
 <meta name="description" content="按住一個鍵說話，整理好的文字直接出現在游標位置。本機辨識 + AI 修稿。">
 <style>
   :root{
@@ -24,8 +26,10 @@
             "Helvetica Neue",sans-serif;
        padding:0 20px env(safe-area-inset-bottom,0px)}
   .wrap{max-width:720px;margin:0 auto;padding-block:56px 80px}
-  h1{font-size:40px;line-height:1.2;margin:0 0 10px;letter-spacing:-.02em}
-  .tag{color:var(--dim);font-size:18px;margin:0 0 36px}
+  .hero{display:flex;gap:18px;align-items:center;margin:0 0 36px}
+  .hero img{border-radius:16px;flex-shrink:0}
+  h1{font-size:40px;line-height:1.2;margin:0 0 6px;letter-spacing:-.02em}
+  .tag{color:var(--dim);font-size:18px;margin:0}
   h2{font-size:20px;margin:44px 0 12px;letter-spacing:-.01em}
   h3{font-size:15px;margin:22px 0 6px;color:var(--dim);font-weight:600}
   p{margin:0 0 14px}
@@ -54,13 +58,18 @@
   footer{margin-top:60px;padding-top:22px;border-top:1px solid var(--line);
          color:var(--dim);font-size:14px}
   a{color:var(--accent)}
-  @media (max-width:520px){ h1{font-size:30px} .cmd{flex-direction:column;align-items:stretch}
+  @media (max-width:520px){ h1{font-size:30px} .hero{gap:14px} .hero img{width:56px;height:56px} .cmd{flex-direction:column;align-items:stretch}
     .cmd code{white-space:pre-wrap;word-break:break-all} }
 </style>
 
 <div class="wrap">
-  <h1>VoiceType</h1>
-  <p class="tag">按住一個鍵說話，整理好的文字直接出現在游標位置。</p>
+  <div class="hero">
+    <img src="assets/logo.png" alt="VoiceType" width="72" height="72">
+    <div>
+      <h1>VoiceType</h1>
+      <p class="tag">按住一個鍵說話，整理好的文字直接出現在游標位置。</p>
+    </div>
+  </div>
 
   <div class="cmd">
     <code id="c">curl -fsSL https://tekelin16-tech.github.io/voicetype/install.sh | bash</code>
@@ -97,7 +106,7 @@
     <tr><td><kbd>⌥Space</kbd></td><td>按住說話，放開就貼上</td></tr>
     <tr><td><kbd>⌥Space</kbd> 按一下</td><td>改成鎖定錄音，再按一下結束（長句用）</td></tr>
     <tr><td><kbd>⌥⇧Space</kbd></td><td>切換錄音</td></tr>
-    <tr><td><kbd>⌥⌘Space</kbd></td><td>選修稿風格</td></tr>
+    <tr><td><kbd>⌃⌥Space</kbd></td><td>選修稿風格</td></tr>
     <tr><td><kbd>⌥⌘H</kbd></td><td>歷史紀錄與設定</td></tr>
     <tr><td><kbd>Esc</kbd></td><td>錄音中取消</td></tr>
   </table>
