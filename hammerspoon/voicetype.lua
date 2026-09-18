@@ -624,7 +624,12 @@ local function showUI()
   if uiWin then
     local alive = pcall(function() return uiWin:hswindow() end)
     if alive and uiWin:hswindow() then
-      uiWin:show():bringToFront(); pushToUI(); return
+      -- 重新載入頁面：視窗一旦開著就會一直用當時載入的 HTML，
+      -- 軟體更新後若沒關過視窗，看到的還是舊介面（新功能像是沒做出來一樣）。
+      uiWin:reload()
+      uiWin:show():bringToFront()
+      hs.timer.doAfter(0.4, pushToUI)
+      return
     end
     uiWin = nil; uiCtrl = nil
   end
