@@ -606,6 +606,12 @@ local function onUIMessage(msg)
   elseif a == "delete" then vt({ "history-del", p.id })
   elseif a == "copy" then hs.pasteboard.setContents(p.text or "")
   elseif a == "settings" then saveSettings(p)
+  elseif a == "learn" then
+    -- 把學到的條目接到詞彙表後面。走 stdin，內容可能有中文和箭號。
+    local t = hs.task.new("/bin/bash", nil, { VT, "corr-add" })
+    t:setEnvironment(ENV)
+    t:setInput(table.concat(p.lines or {}, "\n") .. "\n")
+    t:start()
   elseif a == "capture-start" then startCapture()
   elseif a == "capture-stop" then stopCapture()
   end

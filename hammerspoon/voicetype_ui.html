@@ -37,6 +37,9 @@
   button:hover{background:var(--chip)}
   button.p{background:var(--accent);border-color:var(--accent);color:#fff}
   button.d{color:var(--danger)}
+  .learn{margin-top:10px;padding:10px 12px;border-radius:8px;
+         background:var(--chip);border:1px solid var(--line);font-size:12px}
+  .learn .pair{font-family:ui-monospace,Menlo,monospace;margin:3px 0}
   .empty{text-align:center;color:var(--dim);padding:50px 20px}
   .fld{margin-bottom:16px}
   .fld label{display:block;font-weight:600;margin-bottom:4px}
@@ -142,6 +145,71 @@ function welcomeHTML(){
       不想讓內容送到 DeepSeek，把風格切成「原始」，就是純本機離線。
     </div>
   </div>`;
+}
+
+
+// 比對編輯前後的差異，找出「換掉哪個詞」。
+// 目的是把編輯變成一次學習：你在編輯框裡已經打對過一次了，
+// 沒道理下次還要你自己去詞彙表再打一次。
+// 只認「替換」（兩邊都有字），純粹新增或刪除（標點、語氣詞）不算詞彙問題。
+const PUNCT = /^[\s，。、！？；：「」『』（）,.!?;:'"()\[\]…—-]*$/;
+
+function diffPairs(a, b){
+  if (!a || !b || a === b) return [];
+  if (a.length > 600 || b.length > 600) return [];   // 太長就別算了，也不會是換詞
+  const n = a.length, m = b.length;
+  // 最長共同子序列
+  const dp = Array.from({length: n + 1}, () => new Uint16Array(m + 1));
+  for (let i = n - 1; i >= 0; i--)
+    for (let j = m - 1; j >= 0; j--)
+      dp[i][j] = a[i] === b[j] ? dp[i+1][j+1] + 1 : Math.max(dp[i+1][j], dp[i][j+1]);
+
+  const pairs = [];
+  let i = 0, j = 0, del = "", ins = "";
+  const flush = (aEnd) => {
+    if (del && ins && del !== ins &&
+        del.length <= 12 && ins.length <= 12 &&
+        !PUNCT.test(del) && !PUNCT.test(ins)) {
+      // 往前抓最多兩個共同字當前後文。
+      // 不這樣做的話「林國祥→林國翔」會變成規則「祥→翔」，
+      // 以後講「吉祥」就會被改成「吉翔」——比原本的錯還糟。
+      let pre = "", k = aEnd - del.length - 1;
+      while (pre.length < 2 && k >= 0 && !PUNCT.test(a[k])) { pre = a[k] + pre; k--; }
+      // 句首的字前面沒東西可抓（「祥和」→「詳和」會變成規則「祥→詳」），
+      // 這時往後抓，至少湊到兩個字
+      let post = "", t2 = aEnd;
+      while (pre.length + post.length < 2 && t2 < a.length && !PUNCT.test(a[t2])) { post += a[t2]; t2++; }
+      pairs.push({ from: pre + del + post, to: pre + ins + post });
+    }
+    del = ""; ins = "";
+  };
+  while (i < n && j < m){
+    if (a[i] === b[j]){ flush(i); i++; j++; }
+    else if (dp[i+1][j] >= dp[i][j+1]) del += a[i++];
+    else ins += b[j++];
+  }
+  while (i < n) del += a[i++];
+  while (j < m) ins += b[j++];
+  flush(i);
+  return pairs;
+}
+
+
+// 編輯完跳出來問要不要記住
+function offerLearn(id, pairs){
+  const card = document.querySelector(`.card[data-id="${id}"]`);
+  if (!card) return;
+  const lines = pairs.map(p => p.from + "→" + p.to);
+  const box = document.createElement("div");
+  box.className = "learn";
+  box.innerHTML = `
+    <div style="margin-bottom:6px">要記住這個修改嗎？以後辨識到就會自動改過來。</div>
+    ${pairs.map(p => `<div class="pair"><b>${esc(p.from)}</b> → <b>${esc(p.to)}</b></div>`).join("")}
+    <div class="row">
+      <button class="p" data-a="learn" data-pairs="${encodeURIComponent(JSON.stringify(lines))}">加進詞彙表</button>
+      <button data-a="nolearn">這次不用</button>
+    </div>`;
+  card.appendChild(box);
 }
 
 function renderHist(){
@@ -318,9 +386,22 @@ document.addEventListener("click", ev => {
   else if (a === "cancel"){ editing = null; renderHist(); }
   else if (a === "save"){
     const v = document.getElementById("ta-"+id).value;
-    const e = HIST.find(x => x.id === id); if (e) e.out = v;
+    const e = HIST.find(x => x.id === id);
+    const pairs = e ? diffPairs(e.out, v) : [];
+    if (e) e.out = v;
     editing = null; renderHist(); send("save", { id, out: v });
+    if (pairs.length) offerLearn(id, pairs);
   }
+  else if (a === "learn"){
+    const lines = JSON.parse(decodeURIComponent(t.dataset.pairs));
+    send("learn", { lines });
+    const box = t.closest(".learn");
+    box.innerHTML = '<span style="color:var(--dim)">已加進詞彙表，下次就會直接打對</span>';
+    setTimeout(() => box.remove(), 2600);
+    // 本地也更新一份，設定分頁才不會顯示舊的
+    CFG.corrections = (CFG.corrections || "").replace(/\n*$/, "\n") + lines.join("\n") + "\n";
+  }
+  else if (a === "nolearn"){ t.closest(".learn").remove(); }
   else if (a === "copy"){ const e = HIST.find(x => x.id === id); send("copy", { text: e.out }); t.textContent = "已複製"; setTimeout(() => t.textContent = "複製", 1200); }
   else if (a === "del"){ HIST = HIST.filter(x => x.id !== id); renderHist(); send("delete", { id }); }
 });

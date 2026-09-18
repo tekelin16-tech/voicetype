@@ -320,6 +320,10 @@ open(path, 'w', encoding='utf-8').write(s)
 PY
 }
 
+corr_add(){   # 從 stdin 讀新的條目，接在現有詞彙表後面（corr_set 會去重）
+  { corr_get; cat; } | corr_set
+}
+
 corr_get(){ [ -f "$CORR" ] && cat "$CORR" || true; }
 corr_set(){   # 存檔時去重、去空行，並保證結尾有換行
   mkdir -p "$(dirname "$CORR")"
@@ -415,6 +419,7 @@ case "$cmd" in
     echo "可用裝置:"; mic_scan | sed 's/^/  /'
     echo "錄音權限: $("$VTREC" --check 2>&1)"; echo "style: $STYLE" ;;
   corr-get)     corr_get ;;
+  corr-add)     corr_add ;;
   corr-set)     corr_set ;;
   config-get)   config_get ;;
   config-set)   config_set "$1" "${2:-}" ;;
@@ -433,5 +438,5 @@ case "$cmd" in
           mic_ok && echo "麥克風「${MIC_NAME:-系統預設}」✓" || echo "麥克風「${MIC_NAME}」✗ 找不到"
           echo "模型: $MODEL"; [ -f "$MODEL" ] && echo "模型存在 ✓" || echo "模型不存在 ✗"
           [ -n "${DEEPSEEK_API_KEY:-}" ] && echo "DEEPSEEK_API_KEY 已設定 ✓" || echo "DEEPSEEK_API_KEY 未設定 ✗" ;;
-  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|corr-get|corr-set|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
+  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|corr-get|corr-set|corr-add|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
 esac
