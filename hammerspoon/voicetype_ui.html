@@ -41,6 +41,7 @@
   .fld{margin-bottom:16px}
   .fld label{display:block;font-weight:600;margin-bottom:4px}
   .fld .help{color:var(--dim);font-size:11px;margin-bottom:6px}
+  .fld .help code{background:var(--chip);padding:1px 5px;border-radius:4px}
   .fld input[type=text],.fld select,.fld textarea{
     width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:7px;
     background:var(--panel);color:var(--txt);font:inherit;-webkit-user-select:text}
@@ -190,15 +191,19 @@ const HOTKEYS = [
 ];
 
 function renderSet(){
+  const hk = k => prettyHK(CFG.hotkeys?.[k]);
   document.getElementById("set").innerHTML = `
-    <div class="fld"><label>熱鍵</label>
-      <div class="help">點一下欄位，然後按下你要的組合鍵。改完按最下面的儲存。</div>
-      ${HOTKEYS.map(([k,n,h]) => `
-        <div class="hk" style="margin-bottom:7px">
-          <div style="width:88px">${n}</div>
-          <div class="cap" data-hk="${k}">${prettyHK(CFG.hotkeys?.[k])}</div>
-        </div>
-        <div class="help" style="margin:-3px 0 9px 96px">${h}</div>`).join("")}
+    <div class="fld"><label>詞彙表</label>
+      <div class="help">
+        名字、暱稱、公司名、專案代號、術語——會打錯的字都放這裡。一行一條，兩種寫法：<br>
+        <code>國翔</code>　　　辨識時優先選這個寫法，聽到音近的也會往這邊修<br>
+        <code>國祥→國翔</code>　不管前面怎麼判，最後一定換成右邊（最保險）<br>
+        同音字建議<b>兩條都寫</b>：第一條讓 AI 理解語境，第二條是保險。
+      </div>
+      <textarea id="corr" style="min-height:170px;font-family:ui-monospace,Menlo,monospace;font-size:12px">${esc(CFG.corrections||"")}</textarea>
+      <div class="help" style="margin-top:5px">
+        前 40 條會餵給辨識引擎當熱詞（太多會拖慢辨識），強制替換規則則全部生效。
+      </div>
     </div>
 
     <div class="fld"><label>預設修稿風格</label>
@@ -207,19 +212,14 @@ function renderSet(){
       <div class="help">「原始」＝跳過 DeepSeek，完全離線，不送任何東西出去。</div>
     </div>
 
-    <div class="fld"><label>專有名詞熱詞表</label>
-      <div class="help">人名、品牌、術語寫進去可大幅改善辨識。逗號分隔，建議 30 個以內——太長會拖慢辨識。</div>
-      <textarea id="vocab">${esc(CFG.vocab||"")}</textarea>
-    </div>
-
-    <div class="fld"><label>修正字典</label>
-      <div class="help">
-        同音字（國翔／國祥）光靠上面的熱詞表壓不住，辨識選哪個字是機率問題。<br>
-        這裡一行一條，兩種寫法：<br>
-        <code>國翔</code> — 告訴 AI 這是專有名詞，聽到音近的就往這邊修<br>
-        <code>國祥→國翔</code> — 不管前面怎麼判，最後一定換掉（最保險）
-      </div>
-      <textarea id="corr" style="min-height:96px;font-family:ui-monospace,Menlo,monospace">${esc(CFG.corrections||"")}</textarea>
+    <div class="fld"><label>熱鍵</label>
+      <div class="help">點一下欄位，然後按下你要的組合鍵。改完按最下面的儲存。</div>
+      ${HOTKEYS.map(([k,n,h]) => `
+        <div class="hk" style="margin-bottom:7px">
+          <div style="width:88px">${n}</div>
+          <div class="cap" data-hk="${k}">${prettyHK(CFG.hotkeys?.[k])}</div>
+        </div>
+        <div class="help" style="margin:-3px 0 9px 96px">${h}</div>`).join("")}
     </div>
 
     <div class="fld"><label>麥克風</label>
@@ -303,7 +303,6 @@ document.addEventListener("click", ev => {
       return;
     }
     CFG.style = document.getElementById("style").value;
-    CFG.vocab = document.getElementById("vocab").value;
     CFG.mic   = document.getElementById("mic").value;
     CFG.corrections = document.getElementById("corr").value;
     CFG.sounds = document.getElementById("sounds").checked;

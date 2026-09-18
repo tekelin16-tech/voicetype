@@ -523,7 +523,6 @@ local function saveSettings(c)
   -- 設定檔的寫入交給 vt.sh，UI 不直接碰檔案
   local pairsToSet = {
     { "STYLE", c.style or "default" },
-    { "VOCAB", c.vocab or "" },
     { "MIC_NAME", c.mic or "" },
     { "SOUNDS", c.sounds and "1" or "0" },
     { "AUTO_PASTE", c.autopaste and "1" or "0" },

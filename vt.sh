@@ -125,14 +125,15 @@ is_hallucination(){
 }
 
 transcribe(){
+  local VOCAB_EFF; VOCAB_EFF=$(vocab_effective)
   local out
   if server_up; then
     out=$(curl -s -m 120 "http://127.0.0.1:$PORT/inference" \
           -F file=@"$WAV" -F temperature=0 -F response_format=text \
-          -F language="$LANG_CODE" ${VOCAB:+-F prompt="$VOCAB"} 2>/dev/null)
+          -F language="$LANG_CODE" ${VOCAB_EFF:+-F prompt="$VOCAB_EFF"} 2>/dev/null)
   else
     out=$(whisper-cli -m "$MODEL" -l "$LANG_CODE" -nt -np -sns -t 6 \
-          ${VOCAB:+--prompt "$VOCAB"} -f "$WAV" 2>/dev/null)
+          ${VOCAB_EFF:+--prompt "$VOCAB_EFF"} -f "$WAV" 2>/dev/null)
   fi
   printf '%s' "$out" | tr -d '\r' | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
     | grep -vE '^\[(BLANK_AUDIO|_BEG_|音樂|Music)\]?' | paste -sd' ' -
@@ -143,6 +144,33 @@ transcribe(){
 # 所以分兩層：熱詞表幫 whisper 提高命中率，修正字典在事後把漏網的改掉。
 # 格式：一行一條，「國翔」= 告訴 DeepSeek 這是專有名詞；
 #      「國祥→國翔」= 不管前面怎麼判，最後強制替換。
+# 詞彙表只有一份（corrections.txt），三個用途都從它衍生：
+#   1. whisper 的熱詞（提高一開始就聽對的機率）
+#   2. DeepSeek 的專有名詞清單（讓它知道哪些字是刻意的）
+#   3. 明確的「錯→對」強制替換
+# 之前分成「熱詞表」和「修正字典」兩個欄位，結果兩邊重疊又各有遺漏，
+# 使用者根本不知道該填哪一邊。一份就好。
+vocab_effective(){   # 給 whisper 用的熱詞：config 有設就用它，否則從詞彙表衍生
+  if [ -n "$VOCAB" ]; then printf '%s' "$VOCAB"; return; fi
+  [ -f "$CORR" ] || return
+  # 限 40 個詞：whisper 的 initial prompt 太長會明顯拖慢辨識
+  python3 -c '
+import sys, io
+seen, out = set(), []
+for line in io.open(sys.argv[1], encoding="utf-8"):
+    line = line.strip()
+    if not line or line.startswith("#"):
+        continue
+    for sep in ("\u2192", "->"):
+        if sep in line:
+            line = line.split(sep, 1)[1].strip()
+            break
+    if line and line not in seen:
+        seen.add(line); out.append(line)
+sys.stdout.write(",".join(out[:40]))
+' "$CORR"
+}
+
 corr_terms(){   # 取出所有「正確的那一邊」，餵給 DeepSeek 當專有名詞清單
   [ -f "$CORR" ] || return
   python3 -c '
@@ -268,12 +296,12 @@ CORR="$HOME/.config/voicetype/corrections.txt"
 
 config_get(){
   local mics; mics=$(mic_scan | jq -R . | jq -sc .)
-  jq -nc --arg style "$STYLE" --arg vocab "$VOCAB" --arg mic "$MIC_NAME" \
+  jq -nc --arg style "$STYLE" --arg mic "$MIC_NAME" \
          --argjson mics "${mics:-[]}" \
          --argjson sounds "$([ "$SOUNDS" = 1 ] && echo true || echo false)" \
          --argjson autopaste "$([ "$AUTO_PASTE" = 1 ] && echo true || echo false)" \
          --arg model "$DS_MODEL" \
-         '{style:$style, vocab:$vocab, mic:$mic, mics:$mics, sounds:$sounds,
+         '{style:$style, mic:$mic, mics:$mics, sounds:$sounds,
            autopaste:$autopaste, ds_model:$model}'
 }
 
@@ -293,7 +321,24 @@ PY
 }
 
 corr_get(){ [ -f "$CORR" ] && cat "$CORR" || true; }
-corr_set(){ mkdir -p "$(dirname "$CORR")"; cat > "$CORR"; [ -s "$CORR" ] && [ "$(tail -c1 "$CORR")" != "" ] && printf '\n' >> "$CORR"; true; }
+corr_set(){   # 存檔時去重、去空行，並保證結尾有換行
+  mkdir -p "$(dirname "$CORR")"
+  python3 -c '
+import sys, io
+seen, out = set(), []
+for line in io.open(0, encoding="utf-8"):
+    line = line.rstrip()
+    key = line.strip()
+    if not key:
+        continue
+    if key.startswith("#"):
+        out.append(line); continue
+    if key in seen:
+        continue
+    seen.add(key); out.append(line)
+io.open(sys.argv[1], "w", encoding="utf-8").write("\n".join(out) + "\n")
+' "$CORR"
+}
 
 history_get(){ [ -f "$HISTORY" ] && tail -r "$HISTORY" 2>/dev/null | jq -sc . || jq -nc '[]'; }
 
