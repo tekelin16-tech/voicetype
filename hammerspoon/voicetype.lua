@@ -10,6 +10,12 @@
 --  ⌥⌘Space  選這次要用的修稿風格
 -- ============================================================
 
+-- 極輕量的記錄，寫進跟 shell 端同一份 log，方便對照時間軸
+local function vtlog(t)
+  local f = io.open(os.getenv("HOME") .. "/.cache/voicetype/vt.log", "a")
+  if f then f:write(os.date("%Y-%m-%d %H:%M:%S ") .. "[hs] " .. tostring(t) .. "\n"); f:close() end
+end
+
 local HOME     = os.getenv("HOME")
 local VT       = HOME .. "/.local/share/voicetype/vt.sh"
 local HK_FILE  = HOME .. "/.config/voicetype/hotkeys.json"
@@ -65,6 +71,10 @@ local STYLES = {
 }
 
 -- 狀態機：idle / holding / latched / working
+-- 前向宣告：這兩個要在下面很前面的地方就被呼叫，但實作在檔案後段
+-- （用全域可以繞過，但會污染 Hammerspoon 命名空間、可能跟別人的設定撞名）
+local escOn, escOff
+
 local state = "idle"
 local pressedAt = 0
 
@@ -353,7 +363,7 @@ end
 local function startRec()
   vt({ "start", style }, function(code, out, err)
     if code ~= 0 then
-      state = "idle"; render(); overlayHide()
+      state = "idle"; render(); if escOff then escOff() end; overlayHide()
       hs.notify.new({ title = "VoiceType",
         informativeText = "錄音啟動失敗——檢查 Hammerspoon 的麥克風權限" }):send()
     end
@@ -361,7 +371,7 @@ local function startRec()
 end
 
 local function stopRec()
-  state = "working"; render(); overlayWorking()
+  state = "working"; render(); if escOff then escOff() end; overlayWorking()
   vt({ "stop", style }, function(code, out, err)
     state = "idle"; render(); overlayHide()
     local txt = (out or ""):gsub("%s+$", "")
@@ -375,7 +385,8 @@ end
 
 local function cancelRec()
   vt({ "cancel" })
-  state = "idle"; render(); overlayHide()
+  state = "idle"; render(); if escOff then escOff() end; overlayHide()
+  vtlog("已取消錄音")
 end
 
 ----------------------------------------------------------------
@@ -389,6 +400,7 @@ bindHK("按住說話", HK.push,
     elseif state == "idle" then
       pressedAt = hs.timer.secondsSinceEpoch()
       state = "holding"; render()
+      if escOn then escOn() end
       overlayShow("按住說話，放開結束")
       startRec()
     end
@@ -409,6 +421,7 @@ bindHK("按住說話", HK.push,
 bindHK("切換錄音", HK.toggle, function()
   if state == "idle" then
     state = "latched"; render()
+    if escOn then escOn() end
     overlayShow("再按一下結束　·　Esc 取消")
     startRec()
   elseif state == "latched" or state == "holding" then
@@ -433,14 +446,18 @@ chooser:rows(#rows)
 
 bindHK("選修稿風格", HK.style, function() chooser:show() end)
 
--- Esc 取消錄音（用 eventtap，只在錄音中才吃掉這個鍵）
-local escWatcher = hs.eventtap.new({ hs.eventtap.event.types.keyDown }, function(e)
-  if e:getKeyCode() == hs.keycodes.map.escape and (state == "holding" or state == "latched") then
-    cancelRec(); return true
-  end
-  return false
+-- Esc 取消錄音。
+-- 原本用 hs.eventtap 全域攔截，實測收不到 Esc（其他鍵收得到）。
+-- 改成一個「平常停用、只在錄音期間啟用」的真熱鍵：hs.hotkey 走的是系統的
+-- 熱鍵註冊機制，比自己攔事件可靠得多；而且沒在錄音時完全不碰 Esc，
+-- 不會干擾其他程式。
+local escHotkey = hs.hotkey.new({}, "escape", function()
+  vtlog("Esc 觸發，state=" .. tostring(state))
+  if state == "holding" or state == "latched" then cancelRec() end
 end)
-escWatcher:start()
+
+escOn  = function() if escHotkey then escHotkey:enable() end end
+escOff = function() if escHotkey then escHotkey:disable() end end
 
 
 ----------------------------------------------------------------
