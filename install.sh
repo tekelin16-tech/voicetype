@@ -81,7 +81,7 @@ mkdir -p "$DEST" "$CONF_DIR" "$CACHE/models" "$HS_DIR"
 cp "$SRC/vt.sh" "$SRC/set-key.sh" "$SRC/uninstall.sh" "$DEST/" 2>/dev/null
 cp "$SRC/config.sh.example" "$SRC/README.md" "$DEST/" 2>/dev/null
 mkdir -p "$DEST/recorder" "$DEST/assets" "$DEST/launcher"
-cp "$SRC/launcher/build.sh" "$DEST/launcher/" 2>/dev/null
+cp "$SRC/launcher/build.sh" "$SRC/launcher/main.swift" "$DEST/launcher/" 2>/dev/null
 cp "$SRC/assets/logo.png" "$SRC/assets/menubar.png" "$SRC/assets/make-logo.py" "$DEST/assets/" 2>/dev/null
 cp "$SRC/recorder/main.swift" "$SRC/recorder/build.sh" "$DEST/recorder/"
 chmod +x "$DEST"/*.sh "$DEST/recorder/build.sh"

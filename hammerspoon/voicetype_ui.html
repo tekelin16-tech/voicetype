@@ -398,8 +398,11 @@ document.addEventListener("click", ev => {
     const box = t.closest(".learn");
     box.innerHTML = '<span style="color:var(--dim)">已加進詞彙表，下次就會直接打對</span>';
     setTimeout(() => box.remove(), 2600);
-    // 本地也更新一份，設定分頁才不會顯示舊的
+    // 設定分頁的輸入框必須跟著重畫。
+    // 不重畫的話它還留著舊內容，使用者之後按「儲存設定」會把剛學到的規則蓋掉——
+    // 學了等於沒學，而且不會有任何錯誤訊息。
     CFG.corrections = (CFG.corrections || "").replace(/\n*$/, "\n") + lines.join("\n") + "\n";
+    renderSet();
   }
   else if (a === "nolearn"){ t.closest(".learn").remove(); }
   else if (a === "copy"){ const e = HIST.find(x => x.id === id); send("copy", { text: e.out }); t.textContent = "已複製"; setTimeout(() => t.textContent = "複製", 1200); }

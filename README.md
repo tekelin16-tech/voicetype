@@ -33,8 +33,9 @@ DeepSeek 負責的是真正有價值的那一半——加標點、去贅字、�
 2. **選單列的波形圖示** → 「歷史紀錄與設定…」
 3. **`⌥⌘H`**
 
-那個 VoiceType.app 本身不做事，只是叫 Hammerspoon 打開視窗
-（Hammerspoon 沒在跑會先幫你起它）。真正在運作的是 Hammerspoon 模組。
+VoiceType.app 本身不做事，只是叫 Hammerspoon 打開視窗（Hammerspoon 沒在跑會先幫你起它），
+並且常駐著提供 Dock 圖示。**跑完就結束的腳本 Dock 不會顯示圖示，也接不到點擊**，
+所以它寫成一個常駐的小程式（Swift，30 行）。真正在運作的是 Hammerspoon 模組。
 
 ⚠️ `~/.local/share/voicetype/recorder/VoiceTypeRec.app` 是**背景錄音元件**，
 不是主程式。它刻意沒有視窗，點了不會有反應，也已經設定成不被 Spotlight 索引。
