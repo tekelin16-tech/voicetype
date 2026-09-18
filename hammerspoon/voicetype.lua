@@ -342,26 +342,30 @@ end
 
 -- 焦點在不在「能打字的地方」。
 --
--- 這裡刻意用反向判斷（只擋明確不能打字的），不是正向白名單。
--- 實測 Claude 桌面版（Electron）回報 role=AXGroup、AXValue 不可寫，但明明就能打字；
--- 網頁 app 幾乎都這樣。用白名單會把一大堆正常情況擋掉，比原本的問題更糟。
-local NO_TEXT = {
-  AXButton = true, AXCheckBox = true, AXRadioButton = true, AXPopUpButton = true,
-  AXMenuItem = true, AXMenuBarItem = true, AXMenu = true, AXMenuBar = true,
-  AXImage = true, AXSlider = true, AXProgressIndicator = true, AXDisclosureTriangle = true,
-  AXList = true, AXTable = true, AXOutline = true, AXRow = true, AXCell = true,
-  AXWindow = true, AXToolbar = true, AXTabGroup = true, AXSheet = true,
+-- 第一版用黑名單（認出不能打字就不貼），結果誤判太多：很多 App 根本不回報
+-- 焦點（回 nil），或回報成 AXWindow、AXCell 這種在黑名單裡、實際上卻能打字的角色。
+-- 使用者明明點在輸入框上卻不幫他貼，比偶爾貼錯地方糟得多。
+--
+-- 現在改成：除了密碼欄位一律照貼，但用「有沒有把握」決定要不要還原剪貼簿——
+-- 沒把握就把文字留在剪貼簿，萬一沒貼進去，使用者按 ⌘V 還救得回來。
+local TEXT_ROLES = {
+  AXTextField = true, AXTextArea = true, AXComboBox = true,
+  AXSearchField = true, AXStaticText = false,
 }
 
 local function pasteTarget()
   local ok, el = pcall(function()
     return hs.axuielement.systemWideElement():attributeValue("AXFocusedUIElement")
   end)
-  if not ok or not el then return false, "沒有輸入焦點" end
+  if not ok or not el then return true, false, "nil" end        -- 照貼，但沒把握
   local role = el:attributeValue("AXRole")
-  if role == "AXSecureTextField" then return false, "這是密碼欄位" end
-  if NO_TEXT[role] then return false, "焦點不是輸入欄位（" .. tostring(role) .. "）" end
-  return true, role
+  if role == "AXSecureTextField" then
+    return false, false, "密碼欄位"                              -- 唯一不貼的情況
+  end
+  local settable = false
+  pcall(function() settable = el:isAttributeSettable("AXValue") end)
+  local confident = TEXT_ROLES[role] == true or settable
+  return true, confident, tostring(role)
 end
 
 -- 貼上：用 hs.eventtap 而不是 osascript。
@@ -370,20 +374,27 @@ end
 -- 中文一定要走剪貼簿＋⌘V，不能用 keyStrokes 直接打字，輸入法開著會變亂碼。
 local function pasteOut(txt)
   if not txt or txt == "" then return end
-  local canPaste, why = pasteTarget()
-  if not canPaste then
-    -- 貼不進去就把文字留在剪貼簿（不還原），讓使用者自己挑地方貼。
-    -- 這時候絕對不能還原舊剪貼簿，不然辛苦講的那段就消失了。
+  local allow, confident, role = pasteTarget()
+  local app = hs.application.frontmostApplication()
+  vtlog(string.format("貼上判斷 app=%s role=%s 允許=%s 有把握=%s",
+        app and app:name() or "?", role, tostring(allow), tostring(confident)))
+
+  if not allow then
+    -- 只有密碼欄位會走到這裡。文字留在剪貼簿，不還原。
     hs.pasteboard.setContents(txt)
-    showClipboardHint(txt, why)
+    showClipboardHint(txt, role)
     return
   end
+
   local saved = hs.pasteboard.getContents()
   hs.pasteboard.setContents(txt)
   hs.eventtap.keyStroke({ "cmd" }, "v", 0)
-  hs.timer.doAfter(0.6, function()
-    if saved then hs.pasteboard.setContents(saved) end   -- 還原使用者原本複製的東西
-  end)
+  if confident then
+    hs.timer.doAfter(0.6, function()
+      if saved then hs.pasteboard.setContents(saved) end   -- 還原使用者原本複製的東西
+    end)
+  end
+  -- 沒把握的話就不還原：文字留在剪貼簿當保險，萬一沒貼進去按 ⌘V 還救得回來。
 end
 
 local function startRec()
