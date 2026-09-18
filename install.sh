@@ -80,7 +80,8 @@ fi
 mkdir -p "$DEST" "$CONF_DIR" "$CACHE/models" "$HS_DIR"
 cp "$SRC/vt.sh" "$SRC/set-key.sh" "$SRC/uninstall.sh" "$DEST/" 2>/dev/null
 cp "$SRC/config.sh.example" "$SRC/README.md" "$DEST/" 2>/dev/null
-mkdir -p "$DEST/recorder" "$DEST/assets"
+mkdir -p "$DEST/recorder" "$DEST/assets" "$DEST/launcher"
+cp "$SRC/launcher/build.sh" "$DEST/launcher/" 2>/dev/null
 cp "$SRC/assets/logo.png" "$SRC/assets/menubar.png" "$SRC/assets/make-logo.py" "$DEST/assets/" 2>/dev/null
 cp "$SRC/recorder/main.swift" "$SRC/recorder/build.sh" "$DEST/recorder/"
 chmod +x "$DEST"/*.sh "$DEST/recorder/build.sh"
@@ -106,6 +107,13 @@ say "${D}  macOS 不給 Homebrew 的 ffmpeg 麥克風權限（ad-hoc 簽章）�
 say "${D}  錄出來會是一片靜音卻不報錯。所以錄音交給這個有正式 bundle 的小程式。${N}"
 "$DEST/recorder/build.sh" >/dev/null 2>&1 || die "編譯失敗，手動跑看看錯誤：$DEST/recorder/build.sh"
 ok "錄音器編譯完成"
+
+# 「應用程式」裡要有個可以點的東西。沒有的話使用者會去 Launchpad 找，
+# 找到背景用的 VoiceTypeRec（刻意沒有視窗），點了沒反應就以為壞了。
+mkdir -p "$HOME/Applications"
+chmod +x "$DEST/launcher/build.sh" 2>/dev/null
+"$DEST/launcher/build.sh" "$HOME/Applications/VoiceType.app" >/dev/null 2>&1 \
+  && ok "已在「應用程式」建立 VoiceType" || warn "VoiceType.app 建立失敗（不影響熱鍵使用）"
 
 # ---------- 6. 設定檔 ----------
 step "建立設定"
@@ -172,6 +180,7 @@ say "  ${B}⌥⇧Space${N}       切換錄音（長篇口述用）"
 say "  ${B}⌥⌘Space${N}       選修稿風格（一般／AI 指令／訊息／信件／筆記／原始）"
 say "  ${B}Esc${N}           錄音中取消"
 say "  ${B}⌥⌘H${N}          歷史紀錄與設定（可以改熱鍵、編輯講過的內容）"
+say "  ${D}  也可以從「應用程式」點 VoiceType 打開同一個視窗${N}"
 say ""
 say "${D}  說明文件： $DEST/README.md${N}"
 say "${D}  設定檔：   $CONF_DIR/config.sh${N}"

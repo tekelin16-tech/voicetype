@@ -644,6 +644,10 @@ end
 
 bindHK("歷史紀錄與設定", HK.ui, showUI)
 
+-- 讓「應用程式」裡的 VoiceType.app 可以叫出這個視窗。
+-- 那個 app 只是執行 open "hammerspoon://voicetype"。
+hs.urlevent.bind("voicetype", function() showUI() end)
+
 ----------------------------------------------------------------
 -- 選單列點擊 = 手動選單
 ----------------------------------------------------------------

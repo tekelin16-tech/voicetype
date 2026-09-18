@@ -29,4 +29,7 @@ PLEOF
 
 swiftc -O -o "$APP/Contents/MacOS/vtrec" main.swift
 codesign --force --sign - --identifier place.unlimited.voicetype.rec "$APP"
+# 這是內部用的背景元件，不該出現在 Spotlight / Launchpad 的搜尋結果裡——
+# 使用者會誤以為那就是主程式，點下去卻什麼都沒有（它刻意沒有視窗）。
+touch "$(dirname "$APP")/.metadata_never_index"
 echo "✓ 已建置: $APP"

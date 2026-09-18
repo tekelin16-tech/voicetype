@@ -27,6 +27,18 @@ macOS 專用。第一次安裝約 5–10 分鐘（要下載 1.5GB 的辨識模�
 本機辨識的好處：不用把聲音傳出去、沒有 ASR 費用、斷網也還能用（只是少了修稿）。
 DeepSeek 負責的是真正有價值的那一半——加標點、去贅字、簡轉繁台灣用語、依情境改寫語氣。
 
+## 三個地方都能叫出設定視窗
+
+1. **「應用程式」裡的 VoiceType** — 就是一般 App 的用法，Launchpad 或 Spotlight 都找得到
+2. **選單列的波形圖示** → 「歷史紀錄與設定…」
+3. **`⌥⌘H`**
+
+那個 VoiceType.app 本身不做事，只是叫 Hammerspoon 打開視窗
+（Hammerspoon 沒在跑會先幫你起它）。真正在運作的是 Hammerspoon 模組。
+
+⚠️ `~/.local/share/voicetype/recorder/VoiceTypeRec.app` 是**背景錄音元件**，
+不是主程式。它刻意沒有視窗，點了不會有反應，也已經設定成不被 Spotlight 索引。
+
 ## 熱鍵
 
 | 按鍵 | 行為 |

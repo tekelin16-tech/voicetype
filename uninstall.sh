@@ -10,6 +10,7 @@ echo "${B}移除 VoiceType${N}"
 echo ""
 echo "會刪除："
 echo "  $DEST"
+echo "  ~/Applications/VoiceType.app"
 echo "  $CACHE  ${D}(含 1.5GB 辨識模型)${N}"
 echo "  $HS/voicetype.lua  ${D}以及 init.lua 裡的 require 那一行${N}"
 echo "  Keychain 裡的 DeepSeek key"
@@ -23,7 +24,7 @@ case "$a" in [yY]*) ;; *) echo "取消"; exit 0;; esac
 
 pkill -f "whisper-server .*8178" 2>/dev/null
 pkill -f "VoiceTypeRec.app" 2>/dev/null
-rm -rf "$DEST" "$CACHE"
+rm -rf "$DEST" "$CACHE" "$HOME/Applications/VoiceType.app"
 rm -f "$HS/voicetype.lua" "$HS/voicetype_ui.html"
 if [ -f "$HS/init.lua" ]; then
   # 只拿掉我們加的那兩行，其他保持原狀
