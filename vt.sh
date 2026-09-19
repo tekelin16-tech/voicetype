@@ -20,7 +20,8 @@ CORR="$HOME/.config/voicetype/corrections.txt"
 : "${MAX_SECONDS:=300}"
 : "${VT_PASTE:=auto}"   # auto=自己貼(指令列) / none=只輸出交給呼叫端貼(Hammerspoon)
 : "${MIN_LEVEL:=-60}"   # 平均音量低於此 dB 視為沒說話
-: "${HISTORY_MAX:=500}" # 歷史紀錄保留幾筆   # 平均音量低於此 dB 視為沒說話。實測：數位靜音 -91、安靜房間 -41、正常說話 -15
+: "${HISTORY_MAX:=500}" # 歷史紀錄保留幾筆
+: "${SYNC_URL:=https://voice.arkapp.pw}"   # 詞彙表同步服務 # 歷史紀錄保留幾筆   # 平均音量低於此 dB 視為沒說話。實測：數位靜音 -91、安靜房間 -41、正常說話 -15
 : "${VOCAB:=}"
 
 # API key：Keychain 優先。刻意排在環境變數前面——.zshrc 裡可能留著過期的
@@ -357,6 +358,85 @@ history_del(){
   jq -c --arg id "$1" 'select(.id != $id)' "$HISTORY" > "$HISTORY.tmp" && mv "$HISTORY.tmp" "$HISTORY"
 }
 
+# ---------- 詞彙表同步 ----------
+# 帳號碼放 Keychain，不放設定檔。沒設定就不同步，功能照常運作。
+sync_token(){ security find-generic-password -s voicetype-sync-token -w 2>/dev/null; }
+
+sync_set_token(){
+  read -r -s -p "貼上帳號碼（輸入時不顯示）: " T; echo
+  [ -z "$T" ] && { echo "沒有輸入，取消"; return 1; }
+  security delete-generic-password -s voicetype-sync-token >/dev/null 2>&1
+  security add-generic-password -a "$USER" -s voicetype-sync-token -w "$T" -U || return 1
+  local who; who=$(curl -s -m 20 -H "Authorization: Bearer $T" "$SYNC_URL/v1/me" \
+                   | jq -r '.name // empty' 2>/dev/null)
+  if [ -n "$who" ]; then echo "已連上，帳號：$who"; else
+    echo "帳號碼存起來了，但連不上伺服器或帳號碼無效"; return 1; fi
+}
+
+# 把兩份詞彙表合成一份：聯集、去重、保留順序。
+# 用聯集而不是「誰新誰贏」，是因為兩台裝置各自加的詞都該留著——
+# 覆蓋式同步會讓人在手機上加的詞被電腦默默吃掉。
+_merge_vocab(){
+  python3 -c '
+import io, sys
+def load(p):
+    try: return io.open(p, encoding="utf-8").read().splitlines()
+    except FileNotFoundError: return []
+a, b = load(sys.argv[1]), load(sys.argv[2])
+seen, out = set(), []
+for line in a + b:
+    t = line.strip()
+    if not t:
+        continue
+    if t.startswith("#"):
+        if t not in seen: seen.add(t); out.append(line)
+        continue
+    if t in seen: continue
+    seen.add(t); out.append(line)
+sys.stdout.write("\n".join(out) + "\n")
+' "$1" "$2"
+}
+
+sync_vocab(){
+  local t; t=$(sync_token)
+  [ -z "$t" ] && { echo "還沒設定同步帳號碼。跑 vt.sh sync-login" >&2; return 1; }
+  local tmp="$RUN/sync"; mkdir -p "$tmp"
+
+  local attempt
+  for attempt in 1 2; do
+    local resp; resp=$(curl -s -m 25 -H "Authorization: Bearer $t" "$SYNC_URL/v1/vocab")
+    [ -z "$resp" ] && { echo "連不上同步伺服器" >&2; return 1; }
+    local err; err=$(printf '%s' "$resp" | jq -r '.error // empty')
+    [ -n "$err" ] && { echo "同步失敗：$err" >&2; return 1; }
+
+    printf '%s' "$resp" | jq -r '.vocabulary // ""' > "$tmp/remote.txt"
+    local ver; ver=$(printf '%s' "$resp" | jq -r '.version // 0')
+
+    corr_get > "$tmp/local.txt"
+    _merge_vocab "$tmp/local.txt" "$tmp/remote.txt" > "$tmp/merged.txt"
+
+    # 本地先寫入，就算推送失敗，遠端的東西也已經拿到手了
+    cat "$tmp/merged.txt" | corr_set
+
+    local body; body=$(jq -n --rawfile v "$tmp/merged.txt" --argjson bv "$ver" \
+      --arg d "mac" '{vocabulary:$v, base_version:$bv, device:$d}')
+    local put; put=$(curl -s -m 25 -X PUT -H "Authorization: Bearer $t" \
+      -H "Content-Type: application/json" -d "$body" "$SYNC_URL/v1/vocab")
+    local perr; perr=$(printf '%s' "$put" | jq -r '.error // empty')
+
+    if [ "$perr" = "conflict" ]; then
+      # 另一台裝置在這期間改過。重抓再合併一次就好，資料不會掉。
+      log "同步衝突，重新合併"; continue
+    fi
+    if [ -n "$perr" ]; then echo "同步失敗：$perr" >&2; return 1; fi
+
+    local n; n=$(grep -vc '^[[:space:]]*#' "$tmp/merged.txt" 2>/dev/null | tr -d ' ')
+    echo "已同步，共 $n 條（版本 $(printf '%s' "$put" | jq -r '.version')）"
+    rm -rf "$tmp"; return 0
+  done
+  echo "同步衝突重試後仍失敗，請再跑一次" >&2; return 1
+}
+
 # ---------- 主流程 ----------
 do_stop(){
   local st="${1:-$STYLE}"
@@ -418,6 +498,8 @@ case "$cmd" in
     echo "model: $MODEL"; mic_ok && echo "mic: ${MIC_NAME:-（系統預設，第一個裝置）} ✓" || echo "mic: ${MIC_NAME} ✗ 找不到這個裝置"
     echo "可用裝置:"; mic_scan | sed 's/^/  /'
     echo "錄音權限: $("$VTREC" --check 2>&1)"; echo "style: $STYLE" ;;
+  sync)         sync_vocab ;;
+  sync-login)   sync_set_token ;;
   corr-get)     corr_get ;;
   corr-add)     corr_add ;;
   corr-set)     corr_set ;;
@@ -438,5 +520,5 @@ case "$cmd" in
           mic_ok && echo "麥克風「${MIC_NAME:-系統預設}」✓" || echo "麥克風「${MIC_NAME}」✗ 找不到"
           echo "模型: $MODEL"; [ -f "$MODEL" ] && echo "模型存在 ✓" || echo "模型不存在 ✗"
           [ -n "${DEEPSEEK_API_KEY:-}" ] && echo "DEEPSEEK_API_KEY 已設定 ✓" || echo "DEEPSEEK_API_KEY 未設定 ✗" ;;
-  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|corr-get|corr-set|corr-add|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
+  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|sync|sync-login|corr-get|corr-set|corr-add|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
 esac

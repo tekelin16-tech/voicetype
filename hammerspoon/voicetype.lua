@@ -364,7 +364,7 @@ local function pasteTarget()
   end
   local settable = false
   pcall(function() settable = el:isAttributeSettable("AXValue") end)
-  local confident = TEXT_ROLES[role] == true or settable
+  local confident = (TEXT_ROLES[role] == true) or (settable == true)
   return true, confident, tostring(role)
 end
 
@@ -388,9 +388,26 @@ local function pasteOut(txt)
 
   local saved = hs.pasteboard.getContents()
   hs.pasteboard.setContents(txt)
-  hs.eventtap.keyStroke({ "cmd" }, "v", 0)
+
+  -- 兩個讓「有時候貼得上、有時候貼不上」的原因：
+  -- 1. keyStroke 的第三個參數是按鍵按下與放開之間的間隔（微秒）。我原本傳 0，
+  --    等於瞬間按放，Electron 類的 App（Claude、Slack、Notion）常常收不到。
+  --    不傳就是用預設值，穩定得多。
+  -- 2. 設完剪貼簿馬上送 ⌘V 會搶快：App 可能在剪貼簿還沒更新完就去讀，
+  --    貼出來的是舊內容或什麼都沒有。先確認剪貼簿真的換好再送。
+  local ok = false
+  for _ = 1, 25 do
+    if hs.pasteboard.getContents() == txt then ok = true; break end
+    hs.timer.usleep(10000)                                  -- 每次 10ms，最多等 250ms
+  end
+  if not ok then vtlog("剪貼簿沒有在時限內更新，仍嘗試貼上") end
+
+  hs.timer.doAfter(0.05, function()
+    hs.eventtap.keyStroke({ "cmd" }, "v")
+  end)
+
   if confident then
-    hs.timer.doAfter(0.6, function()
+    hs.timer.doAfter(0.9, function()                        -- 貼上改成延後送出，還原也要跟著往後
       if saved then hs.pasteboard.setContents(saved) end   -- 還原使用者原本複製的東西
     end)
   end
