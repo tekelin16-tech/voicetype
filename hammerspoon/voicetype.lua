@@ -403,7 +403,25 @@ local function pasteOut(txt)
   if not ok then vtlog("剪貼簿沒有在時限內更新，仍嘗試貼上") end
 
   hs.timer.doAfter(0.05, function()
-    hs.eventtap.keyStroke({ "cmd" }, "v")
+    -- keyStroke 是丟給系統廣播，某些 App（特別是 Electron）會漏接。
+    -- 改成明確建立按鍵事件、設好 cmd 旗標、按下與放開分開送，
+    -- 並指定送給前景 App 的行程，不依賴系統自己去找該給誰。
+    local target = hs.application.frontmostApplication()
+    local vcode = hs.keycodes.map.v
+    local down = hs.eventtap.event.newKeyEvent({ "cmd" }, "v", true)
+    local up   = hs.eventtap.event.newKeyEvent({ "cmd" }, "v", false)
+    local okp = pcall(function()
+      if target then
+        down:post(target)
+        hs.timer.usleep(30000)      -- 按下與放開之間留 30ms，太快 Electron 會當成沒按
+        up:post(target)
+      else
+        down:post(); hs.timer.usleep(30000); up:post()
+      end
+    end)
+    vtlog(string.format("送出 ⌘V → %s keycode=%s %s",
+      target and target:name() or "（無前景 App）", tostring(vcode),
+      okp and "已送出" or "送出時發生例外"))
   end)
 
   if confident then
