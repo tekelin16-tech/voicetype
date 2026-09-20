@@ -469,7 +469,16 @@ io.open(sys.argv[1], "w", encoding="utf-8").write("\n".join(out) + "\n")
 ' "$CORR"
 }
 
-history_get(){ [ -f "$HISTORY" ] && tail -r "$HISTORY" 2>/dev/null | jq -sc . || jq -nc '[]'; }
+# 只回最近 N 筆。
+# 為什麼要限制：hs.task 是等程序結束才讀輸出，但管線緩衝區只有 64KB——
+# 輸出超過就會卡在寫入、程序永遠不結束、回呼永遠不觸發，整個設定視窗變全白。
+# 這個死鎖在歷史累積到約 230 筆時就會發生，而且從終端機跑完全正常（shell 會持續讀取），
+# 非常難聯想。要調大的話請同時確認輸出仍遠小於 64KB。
+: "${HISTORY_PAGE:=80}"
+history_get(){
+  [ -f "$HISTORY" ] || { jq -nc '[]'; return; }
+  tail -r "$HISTORY" 2>/dev/null | head -n "${1:-$HISTORY_PAGE}" | jq -sc . 2>/dev/null || jq -nc '[]'
+}
 
 history_edit(){   # history_edit ID 新內容
   [ -f "$HISTORY" ] || return 0
@@ -641,7 +650,7 @@ case "$cmd" in
   corr-set)     corr_set ;;
   config-get)   config_get ;;
   config-set)   config_set "$1" "${2:-}" ;;
-  history-get)  history_get ;;
+  history-get)  history_get "${1:-}" ;;
   history-edit) history_edit "$1" "$2" ;;
   history-del)  history_del "$1" ;;
   server-start) server_start ;;

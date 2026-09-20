@@ -332,40 +332,24 @@ local ENV = {
 }
 
 local function vt(args, done)
-  local t = hs.task.new("/bin/bash", function(code, out, err)
-    if done then done(code, out or "", err or "") end
-  end, hs.fnutils.concat({ VT }, args))
+  -- 一定要帶串流回呼。沒有的話 hs.task 會等程序結束才讀輸出，
+  -- 但管線緩衝區只有 64KB——輸出一旦超過，子程序就卡在寫入、永遠不結束、
+  -- 回呼永遠不觸發，畫面就整片空白。而且從終端機跑同一個指令完全正常
+  -- （shell 會持續讀取），非常難聯想。歷史紀錄累積到約 230 筆時踩到過。
+  local buf = {}
+  local t = hs.task.new("/bin/bash",
+    function(code, out, err)
+      local acc = table.concat(buf)
+      if done then done(code, acc ~= "" and acc or (out or ""), err or "") end
+    end,
+    function(_, stdout, _)
+      if stdout then buf[#buf + 1] = stdout end
+      return true                       -- 繼續接收，讓管線保持暢通
+    end,
+    hs.fnutils.concat({ VT }, args))
   t:setEnvironment(ENV)
   t:start()
   return t
-end
-
--- 焦點在不在「能打字的地方」。
---
--- 第一版用黑名單（認出不能打字就不貼），結果誤判太多：很多 App 根本不回報
--- 焦點（回 nil），或回報成 AXWindow、AXCell 這種在黑名單裡、實際上卻能打字的角色。
--- 使用者明明點在輸入框上卻不幫他貼，比偶爾貼錯地方糟得多。
---
--- 現在改成：除了密碼欄位一律照貼，但用「有沒有把握」決定要不要還原剪貼簿——
--- 沒把握就把文字留在剪貼簿，萬一沒貼進去，使用者按 ⌘V 還救得回來。
-local TEXT_ROLES = {
-  AXTextField = true, AXTextArea = true, AXComboBox = true,
-  AXSearchField = true, AXStaticText = false,
-}
-
-local function pasteTarget()
-  local ok, el = pcall(function()
-    return hs.axuielement.systemWideElement():attributeValue("AXFocusedUIElement")
-  end)
-  if not ok or not el then return true, false, "nil" end        -- 照貼，但沒把握
-  local role = el:attributeValue("AXRole")
-  if role == "AXSecureTextField" then
-    return false, false, "密碼欄位"                              -- 唯一不貼的情況
-  end
-  local settable = false
-  pcall(function() settable = el:isAttributeSettable("AXValue") end)
-  local confident = (TEXT_ROLES[role] == true) or (settable == true)
-  return true, confident, tostring(role)
 end
 
 -- 貼上：用 hs.eventtap 而不是 osascript。

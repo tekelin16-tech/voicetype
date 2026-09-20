@@ -311,6 +311,13 @@ ffmpeg -hide_banner -nostats -loglevel info -i /tmp/t.wav -af volumedetect -f nu
   一律寫 `${DS_FALLBACK}`。這個坑在這個專案踩了五次，用這行掃：
   `grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' vt.sh`
 - **`local` 只能用在函式裡**。`case` 分支不是函式，寫了會在執行時才報錯。
+- **`hs.task` 不帶串流回呼時，輸出超過 64KB 會死鎖**。它等程序結束才讀輸出，
+  但管線緩衝區滿了之後子程序就卡在寫入、永遠不結束、回呼永遠不觸發——
+  設定視窗會整片空白，而且**沒有任何錯誤訊息**。同一個指令從終端機跑完全正常
+  （shell 會持續讀取），所以極難聯想。
+  一律用四參數版本 `hs.task.new(path, doneFn, streamFn, args)`，在 streamFn 裡
+  累積輸出並回傳 true，管線才會保持暢通。
+  這個坑在歷史紀錄累積到約 230 筆（66KB）時踩到。
 - **模型要常駐**。每次重新載入 `large-v3-turbo` 要多花 0.6 秒以上，
   用 `whisper-server` 留在記憶體裡，推論才會是 0.8 秒而不是 1.4 秒。
 
