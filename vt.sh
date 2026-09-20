@@ -422,6 +422,33 @@ corr_add(){   # 從 stdin 讀新的條目，接在現有詞彙表後面（corr_s
   { corr_get; cat; } | corr_set
 }
 
+# 給設定視窗用的模型狀態。讓使用者看得懂現在在哪個階段、為什麼。
+model_status(){
+  local now cu du cur stage last
+  now=$(date +%s)
+  cu=$(cat "$COOLDOWN" 2>/dev/null || echo 0); case "$cu" in ''|*[!0-9]*) cu=0 ;; esac
+  du=$(cat "$APIDOWN" 2>/dev/null || echo 0);  case "$du" in ''|*[!0-9]*) du=0 ;; esac
+
+  if [ "$du" -gt "$now" ]; then
+    cur=""; stage="paused"
+  elif [ "$cu" -gt "$now" ]; then
+    cur="$DS_FALLBACK"; stage="fallback"
+  else
+    cur="$DS_MODEL"; stage="primary"
+  fi
+  # 最近一次模型相關的錯誤，讓使用者知道是 503 還是逾時
+  last=$(grep -E "deepseek .*(逾時|HTTP|解析不出)" "$LOG" 2>/dev/null | tail -1 | sed 's/^[0-9-]* [0-9:]* //')
+
+  jq -nc --arg cur "$cur" --arg primary "$DS_MODEL" --arg fb "$DS_FALLBACK" \
+    --arg stage "$stage" --arg last "${last:-}" \
+    --argjson cd "$(( cu > now ? (cu - now) / 60 : 0 ))" \
+    --argjson down "$(( du > now ? (du - now) / 60 : 0 ))" \
+    '{current:$cur, primary:$primary, fallback:$fb, stage:$stage,
+      cooldown_min:$cd, paused_min:$down, last_error:$last}'
+}
+
+model_reset(){ rm -f "$COOLDOWN" "$APIDOWN"; log "使用者手動解除冷卻與暫停"; echo '{"ok":true}'; }
+
 corr_get(){ [ -f "$CORR" ] && cat "$CORR" || true; }
 corr_set(){   # 存檔時去重、去空行，並保證結尾有換行
   mkdir -p "$(dirname "$CORR")"
@@ -607,6 +634,8 @@ case "$cmd" in
     fi; echo "style: $STYLE" ;;
   sync)         sync_vocab ;;
   sync-login)   sync_set_token ;;
+  model-status) model_status ;;
+  model-reset)  model_reset ;;
   corr-get)     corr_get ;;
   corr-add)     corr_add ;;
   corr-set)     corr_set ;;
@@ -637,5 +666,5 @@ case "$cmd" in
           mic_ok && echo "麥克風「${MIC_NAME:-系統預設}」✓" || echo "麥克風「${MIC_NAME}」✗ 找不到"
           echo "模型: $MODEL"; [ -f "$MODEL" ] && echo "模型存在 ✓" || echo "模型不存在 ✗"
           [ -n "${DEEPSEEK_API_KEY:-}" ] && echo "DEEPSEEK_API_KEY 已設定 ✓" || echo "DEEPSEEK_API_KEY 未設定 ✗" ;;
-  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|sync|sync-login|corr-get|corr-set|corr-add|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
+  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|sync|sync-login|model-status|model-reset|corr-get|corr-set|corr-add|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
 esac

@@ -559,12 +559,14 @@ local function pushToUI()
   vt({ "history-get" }, function(_, hist)
     vt({ "config-get" }, function(_, conf)
       vt({ "corr-get" }, function(_, corr)
+       vt({ "model-status" }, function(_, ms)
         local data = {
           history = (hs.json.decode(hist or "[]") or {}),
           config  = (hs.json.decode(conf or "{}") or {}),
         }
         data.config.hotkeys = readHotkeys()
         data.config.corrections = corr or ""
+        data.config.model = hs.json.decode(ms or "{}") or {}
         if LOGO_PATH then
           local f = io.open(LOGO_PATH, "rb")
           if f then
@@ -574,6 +576,7 @@ local function pushToUI()
         end
         local js = "window.vtReceive(" .. hs.json.encode(data) .. ")"
         if uiWin then uiWin:evaluateJavaScript(js) end
+       end)
       end)
     end)
   end)
@@ -666,6 +669,8 @@ local function onUIMessage(msg)
   elseif a == "delete" then vt({ "history-del", p.id })
   elseif a == "copy" then hs.pasteboard.setContents(p.text or "")
   elseif a == "settings" then saveSettings(p)
+  elseif a == "model-reset" then
+    vt({ "model-reset" }, function() hs.timer.doAfter(0.3, pushToUI) end)
   elseif a == "learn" then
     -- 把學到的條目接到詞彙表後面。走 stdin，內容可能有中文和箭號。
     local t = hs.task.new("/bin/bash", nil, { VT, "corr-add" })
@@ -722,11 +727,14 @@ hs.urlevent.bind("voicetype", function() showUI() end)
 ----------------------------------------------------------------
 -- 選單列點擊 = 手動選單
 ----------------------------------------------------------------
+-- 開選單前先更新，數字才不會是舊的
 bar:setMenu(function()
+  refreshModelLabel()
   local m = {
     { title = "歷史紀錄與設定…", fn = showUI },
     { title = "-" },
     { title = "目前風格：" .. styleName(), disabled = true },
+    { title = "修稿模型：" .. (modelLabel ~= "" and modelLabel or "查詢中…"), disabled = true },
   }
   for _, s in ipairs(STYLES) do
     table.insert(m, { title = s.name .. "  —  " .. s.desc, checked = (s.key == style),
@@ -774,7 +782,7 @@ end)
 render()
 
 -- 開機把辨識引擎先熱起來，第一次聽寫就不用等載入模型
-hs.timer.doAfter(3, function() vt({ "server-start" }) end)
+hs.timer.doAfter(3, function() vt({ "server-start" }); refreshModelLabel() end)
 
 -- 第一次安裝時把說明視窗打開。找不到介面是最容易讓人放棄的一關，
 -- 與其等他自己發現選單列，不如直接開給他看。

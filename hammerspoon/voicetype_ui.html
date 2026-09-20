@@ -270,9 +270,43 @@ const HOTKEYS = [
   ["style",  "選修稿風格",     "叫出風格選單"],
 ];
 
+const STAGE = {
+  primary:  { dot:"#22c55e", text:"正常",   note:"用主力模型" },
+  fallback: { dot:"#f59e0b", text:"備援中", note:"主力模型不通，暫時改用備援" },
+  paused:   { dot:"#ef4444", text:"暫停中", note:"兩個模型都連不上，直接輸出未整理的原文" },
+};
+
+function modelCard(){
+  const m = CFG.model || {};
+  const st = STAGE[m.stage] || STAGE.primary;
+  const rows = [];
+  if (m.stage === "paused") {
+    rows.push(["暫停剩餘", m.paused_min + " 分鐘後自動重試"]);
+  } else {
+    rows.push(["目前使用", m.current || "—"]);
+  }
+  rows.push(["主力模型", m.primary || "—"]);
+  rows.push(["備援模型", m.fallback || "—"]);
+  if (m.cooldown_min > 0) rows.push(["切回主力", m.cooldown_min + " 分鐘後自動嘗試"]);
+  if (m.last_error) rows.push(["最近錯誤", m.last_error]);
+  return `
+    <div class="card" style="margin-bottom:18px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px">
+        <span style="width:9px;height:9px;border-radius:50%;background:${st.dot};display:inline-block"></span>
+        <b>修稿模型：${st.text}</b>
+        <span style="color:var(--dim);font-size:11px">${st.note}</span>
+        ${(m.cooldown_min > 0 || m.paused_min > 0)
+          ? '<button data-a="model-reset" style="margin-left:auto">立即重試</button>' : ''}
+      </div>
+      <table style="margin:0;font-size:12px">
+        ${rows.map(([k,v]) => `<tr><td style="width:88px;color:var(--dim);padding:3px 8px 3px 0">${k}</td><td style="padding:3px 0">${esc(String(v))}</td></tr>`).join("")}
+      </table>
+    </div>`;
+}
+
 function renderSet(){
   const hk = k => prettyHK(CFG.hotkeys?.[k]);
-  document.getElementById("set").innerHTML = `
+  document.getElementById("set").innerHTML = modelCard() + `
     <div class="fld"><label>詞彙表</label>
       <div class="help">
         名字、暱稱、公司名、專案代號、術語——會打錯的字都放這裡。一行一條，兩種寫法：<br>
@@ -417,6 +451,10 @@ document.addEventListener("click", ev => {
     renderSet();
   }
   else if (a === "nolearn"){ t.closest(".learn").remove(); }
+  else if (a === "model-reset"){
+    t.textContent = "重試中…"; t.disabled = true;
+    send("model-reset");
+  }
   else if (a === "copy"){ const e = HIST.find(x => x.id === id); send("copy", { text: e.out }); t.textContent = "已複製"; setTimeout(() => t.textContent = "複製", 1200); }
   else if (a === "del"){ HIST = HIST.filter(x => x.id !== id); renderHist(); send("delete", { id }); }
 });
