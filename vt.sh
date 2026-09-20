@@ -14,7 +14,10 @@ CORR="$HOME/.config/voicetype/corrections.txt"
 : "${LANG_CODE:=zh}"
 : "${DS_MODEL:=deepseek-flash}"
 : "${DS_FALLBACK:=deepseek-v4-pro}"  # flash 塞車時改用這個（貴一點但會通）
-: "${DS_TIMEOUT:=20}"                # 逾時別設太長：等 60 秒跟當掉沒兩樣
+: "${DS_TIMEOUT:=8}"                 # 主模型：短皮帶，反正有備援可以退
+: "${DS_TIMEOUT_FALLBACK:=25}"       # 備援：最後一道防線，給它久一點
+: "${DS_DOWN_COOLDOWN:=600}"         # 整個 API 都掛掉時，暫停呼叫多久（秒，預設 10 分鐘）
+: "${DS_COOLDOWN:=14400}"            # 主模型掛掉後，多久內直接走備援（秒，預設 4 小時）
 : "${DS_ENDPOINT:=https://api.deepseek.com/chat/completions}"
 : "${STYLE:=default}"
 : "${SOUNDS:=1}"
@@ -48,7 +51,7 @@ RUN="$HOME/.cache/voicetype"; mkdir -p "$RUN"
 PIDFILE="$RUN/rec.pid"; RAW="$RUN/rec_raw.wav"; WAV="$RUN/rec.wav"; LOG="$RUN/vt.log"
 # 錄音一律走這個有 bundle 的 app。ffmpeg 只拿來轉檔——轉檔不需要麥克風權限。
 VTREC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recorder/VoiceTypeRec.app/Contents/MacOS/vtrec"
-SRVPID="$RUN/server.pid"; STYLEFILE="$RUN/style"; LEVEL="$RUN/level"; FIELDCTX="$RUN/field_context.txt"; LASTRAW="$RUN/last_raw.txt"; LASTOUT="$RUN/last_out.txt"; HISTORY="$RUN/history.jsonl"
+SRVPID="$RUN/server.pid"; STYLEFILE="$RUN/style"; LEVEL="$RUN/level"; COOLDOWN="$RUN/model_cooldown"; APIDOWN="$RUN/api_down"; FIELDCTX="$RUN/field_context.txt"; LASTRAW="$RUN/last_raw.txt"; LASTOUT="$RUN/last_out.txt"; HISTORY="$RUN/history.jsonl"
 
 log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
 ding(){ [ "$SOUNDS" = 1 ] && afplay "/System/Library/Sounds/$1.aiff" >/dev/null 2>&1 & }
@@ -281,19 +284,21 @@ polish(){
   [ -n "$fc" ] && sys="${sys}
 （背景參考，僅供判斷同音字用，不要輸出）游標前已有的文字：${fc}"
 
-  _ds_call(){   # _ds_call 模型 → 成功時印出修好的文字，失敗回非 0
-    local model="$1" b r txt code
+  _clear_down(){ [ -f "$APIDOWN" ] && { rm -f "$APIDOWN"; log "DeepSeek 恢復，解除暫停"; }; true; }
+
+  _ds_call(){   # _ds_call 模型 [逾時秒數] → 成功時印出修好的文字，失敗回非 0
+    local model="$1" tmo="${2:-$DS_TIMEOUT}" b r txt code
     b=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$raw" \
       '{model:$m,temperature:0.2,stream:false,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
     # 分開拿 HTTP 狀態碼：逾時的時候 body 是空的，只靠 body 判斷會得到空訊息，
     # 之後看記錄完全查不出發生什麼事（踩過）
-    r=$(curl -s -m "$DS_TIMEOUT" -w '\n%{http_code}' "$DS_ENDPOINT" \
+    r=$(curl -s -m "$tmo" -w '\n%{http_code}' "$DS_ENDPOINT" \
         -H "Content-Type: application/json" -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
         -d "$b" 2>/dev/null)
     code=$(printf '%s' "$r" | tail -1)
     r=$(printf '%s' "$r" | sed '$d')
     if [ "$code" = "000" ] || [ -z "$code" ]; then
-      log "deepseek $model: 逾時（${DS_TIMEOUT}s 內無回應）"; return 1
+      log "deepseek $model: 逾時（${tmo}s 內無回應）"; return 1
     fi
     if [ "$code" != "200" ]; then
       log "deepseek $model: HTTP $code $(printf '%s' "$r" | jq -r '.error.message // .' 2>/dev/null | head -c 160)"
@@ -301,29 +306,63 @@ polish(){
     fi
     txt=$(printf '%s' "$r" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
     [ -z "$txt" ] && { log "deepseek $model: 回應解析不出內容"; return 1; }
+    _clear_down
     printf '%s' "$txt"
   }
 
-  local out
-  if out=$(_ds_call "$DS_MODEL"); then
-    printf '%s' "$out"; return
+  # 整個 API 都不通的時候，不要每次口述都去等一輪。
+  # 直接秒出未整理的原文，比讓使用者每句都等半分鐘好太多。
+  local down_until
+  down_until=$(cat "$APIDOWN" 2>/dev/null || echo 0)
+  case "$down_until" in ''|*[!0-9]*) down_until=0 ;; esac
+  if [ "$(date +%s)" -lt "$down_until" ]; then
+    log "DeepSeek 暫停中（剩 $(( (down_until - $(date +%s)) / 60 )) 分鐘），直接用原文"
+    printf '%s' "$raw"; return
   fi
-  # 主模型不通就換備援。flash 層常常塞車，pro 幾乎都通。
-  if [ -n "$DS_FALLBACK" ] && [ "$DS_FALLBACK" != "$DS_MODEL" ]; then
-    log "改用備援模型 $DS_FALLBACK"
-    if out=$(_ds_call "$DS_FALLBACK"); then
-      notify "$DS_MODEL 忙線，已改用 $DS_FALLBACK"
+
+  # 熔斷：主模型掛掉之後，不要每次口述都再浪費十幾秒去試它。
+  # 記下時間，冷卻期內直接走備援；時間到自動回頭試一次，通了就切回來。
+  local now cd_until out
+  now=$(date +%s)
+  cd_until=$(cat "$COOLDOWN" 2>/dev/null || echo 0)
+  case "$cd_until" in ''|*[!0-9]*) cd_until=0 ;; esac
+
+  if [ "$now" -lt "$cd_until" ]; then
+    # 冷卻中：直接用備援，連試都不試主模型
+    if out=$(_ds_call "$DS_FALLBACK" "$DS_TIMEOUT_FALLBACK"); then printf '%s' "$out"; return; fi
+    # 備援也掛了，那就順便看看主模型是不是復活了
+    if out=$(_ds_call "$DS_MODEL"); then
+      rm -f "$COOLDOWN"; log "主模型 $DS_MODEL 恢復，解除冷卻"
+      notify "$DS_MODEL 恢復正常"
       printf '%s' "$out"; return
     fi
+  else
+    if out=$(_ds_call "$DS_MODEL"); then
+      if [ "$cd_until" -gt 0 ]; then
+        rm -f "$COOLDOWN"; log "主模型 $DS_MODEL 恢復，解除冷卻"; notify "$DS_MODEL 恢復正常"
+      fi
+      printf '%s' "$out"; return
+    fi
+    # 主模型不通 → 進入冷卻，之後直接走備援
+    if [ -n "$DS_FALLBACK" ] && [ "$DS_FALLBACK" != "$DS_MODEL" ]; then
+      echo $((now + DS_COOLDOWN)) > "$COOLDOWN"
+      log "$DS_MODEL 不通，改用 ${DS_FALLBACK}，冷卻 $((DS_COOLDOWN / 3600)) 小時"
+      notify "$DS_MODEL 忙線，接下來 $((DS_COOLDOWN / 3600)) 小時改用 $DS_FALLBACK"
+      if out=$(_ds_call "$DS_FALLBACK" "$DS_TIMEOUT_FALLBACK"); then printf '%s' "$out"; return; fi
+    fi
   fi
-  notify "DeepSeek 無法連線，貼出未整理的原文"
+
+  # 兩個模型都不通 → 暫停呼叫一段時間，讓後續口述直接秒出原文
+  echo $(( $(date +%s) + DS_DOWN_COOLDOWN )) > "$APIDOWN"
+  log "DeepSeek 全數不通，暫停呼叫 $((DS_DOWN_COOLDOWN / 60)) 分鐘"
+  notify "DeepSeek 連不上，接下來 $((DS_DOWN_COOLDOWN / 60)) 分鐘直接輸出未整理的原文"
   printf '%s' "$raw"
 }
 
 # ---------- 歷史紀錄 ----------
 # 一行一筆 JSON（jsonl）。用 jq 產生，才不會被引號、換行、CJK 搞壞。
 history_add(){
-  # 用 /dev/urandom 而不是 $RANDOM：同一秒內連續呼叫 $RANDOM 會拿到一樣的值，
+  # 用 /dev/urandom 而不是 ${RANDOM}：同一秒內連續呼叫 $RANDOM 會拿到一樣的值，
   # 兩筆紀錄撞 id 的話，刪一筆會把兩筆都刪掉。
   local id; id="$(date +%s)-$(od -An -N4 -tx1 /dev/urandom | tr -d ' \n')"
   jq -nc --arg id "$id" --arg ts "$(date -u +%FT%TZ)" \
@@ -555,7 +594,17 @@ case "$cmd" in
     server_up && echo "server: up (port $PORT)" || echo "server: down"
     echo "model: $MODEL"; mic_ok && echo "mic: ${MIC_NAME:-（系統預設，第一個裝置）} ✓" || echo "mic: ${MIC_NAME} ✗ 找不到這個裝置"
     echo "可用裝置:"; mic_scan | sed 's/^/  /'
-    echo "錄音權限: $("$VTREC" --check 2>&1)"; echo "style: $STYLE" ;;
+    echo "錄音權限: $("$VTREC" --check 2>&1)"
+    cu=$(cat "$COOLDOWN" 2>/dev/null || echo 0)
+    case "$cu" in ''|*[!0-9]*) cu=0 ;; esac
+    du=$(cat "$APIDOWN" 2>/dev/null || echo 0)
+    case "$du" in ''|*[!0-9]*) du=0 ;; esac
+    [ "$du" -gt "$(date +%s)" ] && echo "⚠️ DeepSeek 暫停呼叫中，剩 $(( (du - $(date +%s)) / 60 )) 分鐘（直接輸出原文）"
+    if [ "$cu" -gt "$(date +%s)" ]; then
+      echo "修稿模型: ${DS_FALLBACK}（$DS_MODEL 冷卻中，剩 $(( (cu - $(date +%s)) / 60 )) 分鐘）"
+    else
+      echo "修稿模型: $DS_MODEL"
+    fi; echo "style: $STYLE" ;;
   sync)         sync_vocab ;;
   sync-login)   sync_set_token ;;
   corr-get)     corr_get ;;
@@ -575,6 +624,16 @@ case "$cmd" in
           printf '%s\n' "$out" ;;
   test)   echo "錄音器: $VTREC"; [ -x "$VTREC" ] && echo "  存在 ✓" || echo "  不存在 ✗ 先跑 recorder/build.sh"
           echo "錄音權限: $("$VTREC" --check 2>&1)"
+    cu=$(cat "$COOLDOWN" 2>/dev/null || echo 0)
+    case "$cu" in ''|*[!0-9]*) cu=0 ;; esac
+    du=$(cat "$APIDOWN" 2>/dev/null || echo 0)
+    case "$du" in ''|*[!0-9]*) du=0 ;; esac
+    [ "$du" -gt "$(date +%s)" ] && echo "⚠️ DeepSeek 暫停呼叫中，剩 $(( (du - $(date +%s)) / 60 )) 分鐘（直接輸出原文）"
+    if [ "$cu" -gt "$(date +%s)" ]; then
+      echo "修稿模型: ${DS_FALLBACK}（$DS_MODEL 冷卻中，剩 $(( (cu - $(date +%s)) / 60 )) 分鐘）"
+    else
+      echo "修稿模型: $DS_MODEL"
+    fi
           mic_ok && echo "麥克風「${MIC_NAME:-系統預設}」✓" || echo "麥克風「${MIC_NAME}」✗ 找不到"
           echo "模型: $MODEL"; [ -f "$MODEL" ] && echo "模型存在 ✓" || echo "模型不存在 ✗"
           [ -n "${DEEPSEEK_API_KEY:-}" ] && echo "DEEPSEEK_API_KEY 已設定 ✓" || echo "DEEPSEEK_API_KEY 未設定 ✗" ;;
