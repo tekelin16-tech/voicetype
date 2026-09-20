@@ -318,6 +318,13 @@ ffmpeg -hide_banner -nostats -loglevel info -i /tmp/t.wav -af volumedetect -f nu
   一律用四參數版本 `hs.task.new(path, doneFn, streamFn, args)`，在 streamFn 裡
   累積輸出並回傳 true，管線才會保持暢通。
   這個坑在歷史紀錄累積到約 230 筆（66KB）時踩到。
+- **Lua 呼叫不存在的函式，語法檢查抓不到**。`loadfile` 只驗語法，
+  呼叫 nil 是執行期錯誤；而且在 `hs.task` 的回呼裡出錯會被整個吞掉，
+  沒有任何訊息——症狀是「前面每一步都成功，然後什麼都沒發生」。
+  改完一定要跑一次真實流程，不能只看「語法 OK」。
+- **不要用「從 A 位置切到 B 位置全部換掉」的方式改程式碼**。
+  夾在中間的東西會被一起刪掉而毫無警告。這次 `pasteTarget` 和 `TEXT_ROLES`
+  就是這樣消失的，整個貼上功能死掉但所有檢查都顯示正常。
 - **模型要常駐**。每次重新載入 `large-v3-turbo` 要多花 0.6 秒以上，
   用 `whisper-server` 留在記憶體裡，推論才會是 0.8 秒而不是 1.4 秒。
 

@@ -356,6 +356,30 @@ end
 -- osascript 打 System Events 需要另一個「自動化」權限，第一次會跳對話框把整個流程卡住；
 -- hs.eventtap 直接用 Hammerspoon 本來就需要的「輔助使用」權限，也快得多。
 -- 中文一定要走剪貼簿＋⌘V，不能用 keyStrokes 直接打字，輸入法開著會變亂碼。
+-- 焦點在不在「能打字的地方」。
+--
+-- 用反向判斷（只擋明確不能打字的），不是正向白名單：很多 App 根本不回報焦點
+-- （回 nil），或回報成 AXWindow、AXCell 這種在黑名單裡、實際上卻能打字的角色。
+-- 明明點在輸入框上卻不幫使用者貼，比偶爾貼錯地方糟得多。
+local TEXT_ROLES = {
+  AXTextField = true, AXTextArea = true, AXComboBox = true, AXSearchField = true,
+}
+
+local function pasteTarget()
+  local ok, el = pcall(function()
+    return hs.axuielement.systemWideElement():attributeValue("AXFocusedUIElement")
+  end)
+  if not ok or not el then return true, false, "nil" end        -- 照貼，但沒把握
+  local role = el:attributeValue("AXRole")
+  if role == "AXSecureTextField" then
+    return false, false, "密碼欄位"                              -- 唯一不貼的情況
+  end
+  local settable = false
+  pcall(function() settable = el:isAttributeSettable("AXValue") end)
+  local confident = (TEXT_ROLES[role] == true) or (settable == true)
+  return true, confident, tostring(role)
+end
+
 local function pasteOut(txt)
   if not txt or txt == "" then return end
   local allow, confident, role = pasteTarget()
@@ -444,8 +468,18 @@ local function stopRec()
   state = "working"; render(); if escOff then escOff() end; overlayWorking()
   vt({ "stop", style }, function(code, out, err)
     state = "idle"; render(); overlayHide()
-    local txt = (out or ""):gsub("%s+$", "")
-    if code == 0 and txt ~= "" then
+    local piped = (out or ""):gsub("%s+$", "")
+    local txt = piped
+    -- 不要只依賴管線。vt.sh 本來就會把結果寫進 last_out.txt，
+    -- 管線萬一沒把資料帶回來，讀檔一樣拿得到——
+    -- 使用者不該因為行程間通訊的細節而白講一場。
+    if txt == "" then
+      local f = io.open(HOME .. "/.cache/voicetype/last_out.txt", "r")
+      if f then txt = (f:read("*a") or ""):gsub("%s+$", ""); f:close() end
+    end
+    vtlog(string.format("stop 回呼: exit=%s 管線=%d字 最終=%d字%s",
+      tostring(code), #piped, #txt, (piped == "" and txt ~= "") and "（改讀檔案）" or ""))
+    if txt ~= "" then
       pasteOut(txt)
     else
       hs.notify.new({ title = "VoiceType", informativeText = "沒有辨識到內容" }):send()
