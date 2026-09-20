@@ -153,6 +153,18 @@ function welcomeHTML(){
 // 沒道理下次還要你自己去詞彙表再打一次。
 // 只認「替換」（兩邊都有字），純粹新增或刪除（標點、語氣詞）不算詞彙問題。
 const PUNCT = /^[\s，。、！？；：「」『』（）,.!?;:'"()\[\]…—-]*$/;
+// 虛詞：出現這些就不是專有名詞，是整句措辭被改掉了。
+// 學進來的話等於告訴 AI「因為武岩」是個專有名詞，反而讓辨識變差（踩過）。
+const PARTICLES = /(因為|所以|然後|就是|他們|我們|你們|可以|應該|已經|還是|這個|那個|但是|如果|而且|的時候|一下)/;
+
+function looksLikeTerm(from, to){
+  // 專有名詞通常短。太長的多半是整句改寫，不該學。
+  if (from.length > 8 || to.length > 8) return false;
+  if (PARTICLES.test(from) || PARTICLES.test(to)) return false;
+  // 兩邊長度差太多也不像換詞（例如「可以」→「應該可以先做一個版本」）
+  if (Math.abs(from.length - to.length) > 4) return false;
+  return true;
+}
 
 function diffPairs(a, b){
   if (!a || !b || a === b) return [];
@@ -168,7 +180,6 @@ function diffPairs(a, b){
   let i = 0, j = 0, del = "", ins = "";
   const flush = (aEnd) => {
     if (del && ins && del !== ins &&
-        del.length <= 12 && ins.length <= 12 &&
         !PUNCT.test(del) && !PUNCT.test(ins)) {
       // 往前抓最多兩個共同字當前後文。
       // 不這樣做的話「林國祥→林國翔」會變成規則「祥→翔」，
@@ -179,7 +190,8 @@ function diffPairs(a, b){
       // 這時往後抓，至少湊到兩個字
       let post = "", t2 = aEnd;
       while (pre.length + post.length < 2 && t2 < a.length && !PUNCT.test(a[t2])) { post += a[t2]; t2++; }
-      pairs.push({ from: pre + del + post, to: pre + ins + post });
+      const f = pre + del + post, t = pre + ins + post;
+      if (looksLikeTerm(f, t)) pairs.push({ from: f, to: t });
     }
     del = ""; ins = "";
   };

@@ -13,6 +13,8 @@ CORR="$HOME/.config/voicetype/corrections.txt"
 : "${PORT:=8178}"
 : "${LANG_CODE:=zh}"
 : "${DS_MODEL:=deepseek-flash}"
+: "${DS_FALLBACK:=deepseek-v4-pro}"  # flash 塞車時改用這個（貴一點但會通）
+: "${DS_TIMEOUT:=20}"                # 逾時別設太長：等 60 秒跟當掉沒兩樣
 : "${DS_ENDPOINT:=https://api.deepseek.com/chat/completions}"
 : "${STYLE:=default}"
 : "${SOUNDS:=1}"
@@ -21,7 +23,14 @@ CORR="$HOME/.config/voicetype/corrections.txt"
 : "${VT_PASTE:=auto}"   # auto=自己貼(指令列) / none=只輸出交給呼叫端貼(Hammerspoon)
 : "${MIN_LEVEL:=-60}"   # 平均音量低於此 dB 視為沒說話
 : "${HISTORY_MAX:=500}" # 歷史紀錄保留幾筆
-: "${SYNC_URL:=https://voice.arkapp.pw}"   # 詞彙表同步服務 # 歷史紀錄保留幾筆   # 平均音量低於此 dB 視為沒說話。實測：數位靜音 -91、安靜房間 -41、正常說話 -15
+: "${SYNC_URL:=https://voice.arkapp.pw}"   # 詞彙表同步服務
+# 前後文：給 DeepSeek 多一點線索去判斷同音字。兩種來源，預設值刻意不同——
+#   HISTORY_CONTEXT：拿你最近幾次的口述當線索。這些內容本來就送過 DeepSeek，
+#                    不會多洩漏任何東西，所以預設開。
+#   FIELD_CONTEXT：  拿游標前面「你原本就打好的字」。這是新的外洩，所以預設關。
+#                    另外 Electron App（Claude、Slack）讀不到，開了也沒用。
+: "${HISTORY_CONTEXT:=3}"
+: "${FIELD_CONTEXT:=0}" # 歷史紀錄保留幾筆   # 平均音量低於此 dB 視為沒說話。實測：數位靜音 -91、安靜房間 -41、正常說話 -15
 : "${VOCAB:=}"
 
 # API key：Keychain 優先。刻意排在環境變數前面——.zshrc 裡可能留著過期的
@@ -39,7 +48,7 @@ RUN="$HOME/.cache/voicetype"; mkdir -p "$RUN"
 PIDFILE="$RUN/rec.pid"; RAW="$RUN/rec_raw.wav"; WAV="$RUN/rec.wav"; LOG="$RUN/vt.log"
 # 錄音一律走這個有 bundle 的 app。ffmpeg 只拿來轉檔——轉檔不需要麥克風權限。
 VTREC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/recorder/VoiceTypeRec.app/Contents/MacOS/vtrec"
-SRVPID="$RUN/server.pid"; STYLEFILE="$RUN/style"; LEVEL="$RUN/level"; LASTRAW="$RUN/last_raw.txt"; LASTOUT="$RUN/last_out.txt"; HISTORY="$RUN/history.jsonl"
+SRVPID="$RUN/server.pid"; STYLEFILE="$RUN/style"; LEVEL="$RUN/level"; FIELDCTX="$RUN/field_context.txt"; LASTRAW="$RUN/last_raw.txt"; LASTOUT="$RUN/last_out.txt"; HISTORY="$RUN/history.jsonl"
 
 log(){ printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
 ding(){ [ "$SOUNDS" = 1 ] && afplay "/System/Library/Sounds/$1.aiff" >/dev/null 2>&1 & }
@@ -75,7 +84,7 @@ rec_start(){
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then echo "已經在錄音中"; return 0; fi
   rm -f "$RAW" "$WAV"
   log "start rec: $MIC_NAME"
-  rm -f "$LEVEL"
+  rm -f "$LEVEL" "$FIELDCTX"
   "$VTREC" "$RAW" "$MIC_NAME" "$LEVEL" >> "$LOG" 2>&1 &
   echo $! > "$PIDFILE"
   # 開裝置要一點時間，這段期間說的話收不到。等檔案真的開始長大再響提示音，
@@ -243,23 +252,72 @@ style_prompt(){
   esac
 }
 
+# 最近幾次講過什麼。同音字的判斷很吃語境——你連續在談法律文件時，
+# 「ㄨㄟˇ ㄖㄣˋ」是「委任」不是「未認」。
+recent_context(){
+  [ "${HISTORY_CONTEXT:-0}" -gt 0 ] 2>/dev/null || return
+  [ -f "$HISTORY" ] || return
+  tail -n "$HISTORY_CONTEXT" "$HISTORY" | jq -r '.out // empty' 2>/dev/null \
+    | grep -v '^$' | paste -sd' ' - | cut -c1-400
+}
+
+field_context(){
+  [ "${FIELD_CONTEXT:-0}" = "1" ] || return
+  [ -s "$FIELDCTX" ] || return
+  tail -c 400 "$FIELDCTX"
+}
+
 polish(){
   local raw="$1" st="${2:-$STYLE}" sys body res
   sys=$(style_prompt "$st")
   [ -z "$sys" ] && { printf '%s' "$raw"; return; }
   [ -z "${DEEPSEEK_API_KEY:-}" ] && { log "no DEEPSEEK_API_KEY, 用原文"; printf '%s' "$raw"; return; }
-  body=$(jq -n --arg m "$DS_MODEL" --arg s "$sys" --arg u "$raw" \
-    '{model:$m,temperature:0.2,stream:false,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
-  res=$(curl -s -m 60 "$DS_ENDPOINT" -H "Content-Type: application/json" \
-        -H "Authorization: Bearer $DEEPSEEK_API_KEY" -d "$body" 2>/dev/null)
-  local txt; txt=$(printf '%s' "$res" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
-  if [ -z "$txt" ]; then
-    log "deepseek 失敗: $(printf '%s' "$res" | head -c 300)"
-    notify "DeepSeek 修稿失敗，貼出原始辨識"
-    printf '%s' "$raw"
-  else
+  # 前後文放進 system 而不是 user：它是背景資訊，不是要被整理的內容。
+  # 放 user 的話模型可能會把它一起「整理」後輸出。
+  local hc fc
+  hc=$(recent_context); fc=$(field_context)
+  [ -n "$hc" ] && sys="${sys}
+（背景參考，僅供判斷同音字用，不要輸出）使用者最近幾句口述：${hc}"
+  [ -n "$fc" ] && sys="${sys}
+（背景參考，僅供判斷同音字用，不要輸出）游標前已有的文字：${fc}"
+
+  _ds_call(){   # _ds_call 模型 → 成功時印出修好的文字，失敗回非 0
+    local model="$1" b r txt code
+    b=$(jq -n --arg m "$model" --arg s "$sys" --arg u "$raw" \
+      '{model:$m,temperature:0.2,stream:false,messages:[{role:"system",content:$s},{role:"user",content:$u}]}')
+    # 分開拿 HTTP 狀態碼：逾時的時候 body 是空的，只靠 body 判斷會得到空訊息，
+    # 之後看記錄完全查不出發生什麼事（踩過）
+    r=$(curl -s -m "$DS_TIMEOUT" -w '\n%{http_code}' "$DS_ENDPOINT" \
+        -H "Content-Type: application/json" -H "Authorization: Bearer $DEEPSEEK_API_KEY" \
+        -d "$b" 2>/dev/null)
+    code=$(printf '%s' "$r" | tail -1)
+    r=$(printf '%s' "$r" | sed '$d')
+    if [ "$code" = "000" ] || [ -z "$code" ]; then
+      log "deepseek $model: 逾時（${DS_TIMEOUT}s 內無回應）"; return 1
+    fi
+    if [ "$code" != "200" ]; then
+      log "deepseek $model: HTTP $code $(printf '%s' "$r" | jq -r '.error.message // .' 2>/dev/null | head -c 160)"
+      return 1
+    fi
+    txt=$(printf '%s' "$r" | jq -r '.choices[0].message.content // empty' 2>/dev/null)
+    [ -z "$txt" ] && { log "deepseek $model: 回應解析不出內容"; return 1; }
     printf '%s' "$txt"
+  }
+
+  local out
+  if out=$(_ds_call "$DS_MODEL"); then
+    printf '%s' "$out"; return
   fi
+  # 主模型不通就換備援。flash 層常常塞車，pro 幾乎都通。
+  if [ -n "$DS_FALLBACK" ] && [ "$DS_FALLBACK" != "$DS_MODEL" ]; then
+    log "改用備援模型 $DS_FALLBACK"
+    if out=$(_ds_call "$DS_FALLBACK"); then
+      notify "$DS_MODEL 忙線，已改用 $DS_FALLBACK"
+      printf '%s' "$out"; return
+    fi
+  fi
+  notify "DeepSeek 無法連線，貼出未整理的原文"
+  printf '%s' "$raw"
 }
 
 # ---------- 歷史紀錄 ----------

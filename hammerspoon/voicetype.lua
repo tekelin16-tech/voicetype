@@ -402,26 +402,40 @@ local function pasteOut(txt)
   end
   if not ok then vtlog("剪貼簿沒有在時限內更新，仍嘗試貼上") end
 
-  hs.timer.doAfter(0.05, function()
-    -- keyStroke 是丟給系統廣播，某些 App（特別是 Electron）會漏接。
-    -- 改成明確建立按鍵事件、設好 cmd 旗標、按下與放開分開送，
-    -- 並指定送給前景 App 的行程，不依賴系統自己去找該給誰。
-    local target = hs.application.frontmostApplication()
-    local vcode = hs.keycodes.map.v
-    local down = hs.eventtap.event.newKeyEvent({ "cmd" }, "v", true)
-    local up   = hs.eventtap.event.newKeyEvent({ "cmd" }, "v", false)
-    local okp = pcall(function()
-      if target then
-        down:post(target)
-        hs.timer.usleep(30000)      -- 按下與放開之間留 30ms，太快 Electron 會當成沒按
-        up:post(target)
-      else
-        down:post(); hs.timer.usleep(30000); up:post()
+  -- 貼上有兩條路，先走可靠的那條：
+  --
+  -- 1. 觸發 App 自己的「編輯 → 貼上」選單。走的是輔助功能 API，等於使用者
+  --    真的去點那個選單，Electron App（Claude、Slack、Notion）一定會處理。
+  -- 2. 合成 ⌘V 按鍵。實測在 Claude 上會「送出成功但沒作用」——
+  --    記錄顯示 post 沒報錯，文字卻沒進去。所以只當後備。
+  local function pasteViaMenu(app)
+    if not app then return false end
+    -- 選單名稱跟著系統語言跑，兩種都試
+    for _, path in ipairs({ { "Edit", "Paste" }, { "編輯", "貼上" } }) do
+      local ok, found = pcall(function() return app:findMenuItem(path) end)
+      if ok and found and found.enabled ~= false then
+        local ok2 = pcall(function() app:selectMenuItem(path) end)
+        if ok2 then return true, path[1] .. "→" .. path[2] end
       end
+    end
+    return false
+  end
+
+  hs.timer.doAfter(0.05, function()
+    local target = hs.application.frontmostApplication()
+    local viaMenu, which = pasteViaMenu(target)
+    if viaMenu then
+      vtlog(string.format("貼上 → %s 用選單 %s", target:name(), which))
+      return
+    end
+    -- 後備：合成按鍵。按下與放開之間要留間隔，傳 0 的話 Electron 會漏接。
+    local okp = pcall(function()
+      local down = hs.eventtap.event.newKeyEvent({ "cmd" }, "v", true)
+      local up   = hs.eventtap.event.newKeyEvent({ "cmd" }, "v", false)
+      down:post(); hs.timer.usleep(50000); up:post()
     end)
-    vtlog(string.format("送出 ⌘V → %s keycode=%s %s",
-      target and target:name() or "（無前景 App）", tostring(vcode),
-      okp and "已送出" or "送出時發生例外"))
+    vtlog(string.format("貼上 → %s 用模擬按鍵 %s（找不到貼上選單）",
+      target and target:name() or "?", okp and "已送出" or "發生例外"))
   end)
 
   if confident then
