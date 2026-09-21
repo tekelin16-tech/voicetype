@@ -311,6 +311,14 @@ ffmpeg -hide_banner -nostats -loglevel info -i /tmp/t.wav -af volumedetect -f nu
   一律寫 `${DS_FALLBACK}`。這個坑在這個專案踩了五次，用這行掃：
   `grep -nE '\$[A-Za-z_][A-Za-z0-9_]*[^\x00-\x7F]' vt.sh`
 - **`local` 只能用在函式裡**。`case` 分支不是函式，寫了會在執行時才報錯。
+- **`hs.task` 的輸出不要超過約 16KB，即使有串流回呼**。實測：limit=60（13KB）正常、
+  limit=80（20KB）拿到**零 bytes 而且 exit=0、stderr 空的**。macOS 管線緩衝區
+  初始約 16KB，超過之後行為就不可靠（有時空、有時卡住），而且從終端機跑同一個
+  指令完全正常。**大量資料一律走檔案**：shell 端寫檔，Lua 端讀檔。
+- **`set -o pipefail` 加上 `head` 截斷會產生競態**。`head -n 80` 讀夠就結束，
+  上游 `tail` 收到 SIGPIPE 而失敗，pipefail 讓整條管線算失敗，於是走進
+  `|| jq -nc '[]'` 回傳空陣列。從終端機跑時 tail 常常剛好先寫完所以看起來正常。
+  要截斷就讓 jq 自己切（`.[0:80]`），不要用 head 提早關管線。
 - **`hs.task` 不帶串流回呼時，輸出超過 64KB 會死鎖**。它等程序結束才讀輸出，
   但管線緩衝區滿了之後子程序就卡在寫入、永遠不結束、回呼永遠不觸發——
   設定視窗會整片空白，而且**沒有任何錯誤訊息**。同一個指令從終端機跑完全正常

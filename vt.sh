@@ -476,9 +476,19 @@ io.open(sys.argv[1], "w", encoding="utf-8").write("\n".join(out) + "\n")
 # 非常難聯想。要調大的話請同時確認輸出仍遠小於 64KB。
 : "${HISTORY_PAGE:=80}"
 history_get(){
-  [ -f "$HISTORY" ] || { jq -nc '[]'; return; }
-  tail -r "$HISTORY" 2>/dev/null | head -n "${1:-$HISTORY_PAGE}" | jq -sc . 2>/dev/null || jq -nc '[]'
+  # 同時寫檔與印出。Hammerspoon 那端讀檔案，不讀管線——
+  # macOS 的管線緩衝區約 16KB，超過就會有各種難查的行為（輸出變空、程序卡住），
+  # 而且從終端機跑通常正常，非常難重現。走檔案就沒這個問題。
+  local page="$RUN/history_page.json"
+  if [ -f "$HISTORY" ]; then
+    tail -r "$HISTORY" 2>/dev/null | jq -sc ".[0:${1:-$HISTORY_PAGE}]" > "$page" 2>/dev/null \
+      || jq -nc '[]' > "$page"
+  else
+    jq -nc '[]' > "$page"
+  fi
+  cat "$page"
 }
+
 
 history_edit(){   # history_edit ID 新內容
   [ -f "$HISTORY" ] || return 0

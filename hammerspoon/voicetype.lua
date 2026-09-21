@@ -11,6 +11,10 @@
 -- ============================================================
 
 -- 極輕量的記錄，寫進跟 shell 端同一份 log，方便對照時間軸
+-- 載入 ipc，讓 `hs -c "..."` 可以在不重啟的情況下檢查執行中的狀態。
+-- 出問題時反覆重啟 Hammerspoon 會一直打斷使用者的熱鍵，這個可以避免。
+pcall(require, "hs.ipc")
+
 local function vtlog(t)
   local f = io.open(os.getenv("HOME") .. "/.cache/voicetype/vt.log", "a")
   if f then f:write(os.date("%Y-%m-%d %H:%M:%S ") .. "[hs] " .. tostring(t) .. "\n"); f:close() end
@@ -575,6 +579,14 @@ local uiWin, uiCtrl
 local function pushToUI()
   if not uiWin then return end
   vt({ "history-get" }, function(_, hist)
+    -- 讀檔而不是靠管線：20KB 以上的輸出在 hs.task 裡會變成空的（macOS 管線緩衝
+    -- 約 16KB），而且沒有任何錯誤——歷史清單整個消失。vt.sh 已經把同一份內容
+    -- 寫進 history_page.json，直接讀它最穩。
+    local hf = io.open(HOME .. "/.cache/voicetype/history_page.json", "r")
+    if hf then
+      local fromFile = hf:read("*a"); hf:close()
+      if fromFile and #fromFile > #(hist or "") then hist = fromFile end
+    end
     vt({ "config-get" }, function(_, conf)
       vt({ "corr-get" }, function(_, corr)
        vt({ "model-status" }, function(_, ms)
@@ -820,7 +832,32 @@ else
                       " 說話　·　⌥⌘H 開啟歷史紀錄與設定" }):send()
 end
 
-
-
-
-
+----------------------------------------------------------------
+-- 診斷接口。模組內的區域變數從 hs CLI 讀不到，所以開一個全域的窗口。
+-- 用法（不需要重啟 Hammerspoon）：
+--   hs -c 'return vtDebug.state()'
+--   hs -c 'return vtDebug.js([[document.getElementById("hist").innerHTML.length]])'
+----------------------------------------------------------------
+_G.vtDebug = {
+  state = function()
+    return hs.json.encode({
+      state = state,
+      uiOpen = uiWin ~= nil,
+      hotkeys = #boundHotkeys,
+      hkFailed = #hkFailed,
+      style = style,
+      pasteTarget = type(pasteTarget),
+      pasteOut = type(pasteOut),
+    })
+  end,
+  -- 在設定視窗裡執行 JS 並把結果寫進 /tmp/vtdebug.txt（evaluateJavaScript 是非同步的）
+  js = function(code)
+    if not uiWin then return "視窗沒開，先跑 open hammerspoon://voicetype" end
+    uiWin:evaluateJavaScript(code, function(r)
+      local f = io.open("/tmp/vtdebug.txt", "w")
+      if f then f:write(tostring(r)); f:close() end
+    end)
+    return "已送出，結果在 /tmp/vtdebug.txt"
+  end,
+  show = function() showUI(); return "ok" end,
+}
