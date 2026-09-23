@@ -80,6 +80,7 @@ fi
 mkdir -p "$DEST" "$CONF_DIR" "$CACHE/models" "$HS_DIR"
 cp "$SRC/vt.sh" "$SRC/set-key.sh" "$SRC/uninstall.sh" "$DEST/" 2>/dev/null
 cp "$SRC/config.sh.example" "$SRC/README.md" "$DEST/" 2>/dev/null
+cp "$SRC/scan-vocab.py" "$DEST/" 2>/dev/null; chmod +x "$DEST/scan-vocab.py" 2>/dev/null
 mkdir -p "$DEST/recorder" "$DEST/assets" "$DEST/launcher"
 cp "$SRC/launcher/build.sh" "$SRC/launcher/main.swift" "$DEST/launcher/" 2>/dev/null
 cp "$SRC/assets/logo.png" "$SRC/assets/menubar.png" "$SRC/assets/make-logo.py" "$DEST/assets/" 2>/dev/null
