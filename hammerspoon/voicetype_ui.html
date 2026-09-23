@@ -295,9 +295,13 @@ function modelCard(){
         <span style="width:9px;height:9px;border-radius:50%;background:${st.dot};display:inline-block"></span>
         <b>修稿模型：${st.text}</b>
         <span style="color:var(--dim);font-size:11px">${st.note}</span>
-        ${(m.cooldown_min > 0 || m.paused_min > 0)
-          ? '<button data-a="model-reset" style="margin-left:auto">立即重試</button>' : ''}
+        <span style="margin-left:auto;display:flex;gap:6px">
+          ${(m.cooldown_min > 0 || m.paused_min > 0)
+            ? '<button data-a="model-reset">立即重試</button>' : ''}
+          <button data-a="model-test">測試連線</button>
+        </span>
       </div>
+      <div id="testout" style="font-size:12px;margin-bottom:8px"></div>
       <table style="margin:0;font-size:12px">
         ${rows.map(([k,v]) => `<tr><td style="width:88px;color:var(--dim);padding:3px 8px 3px 0">${k}</td><td style="padding:3px 0">${esc(String(v))}</td></tr>`).join("")}
       </table>
@@ -451,6 +455,12 @@ document.addEventListener("click", ev => {
     renderSet();
   }
   else if (a === "nolearn"){ t.closest(".learn").remove(); }
+  else if (a === "model-test"){
+    t.textContent = "測試中…"; t.disabled = true;
+    document.getElementById("testout").innerHTML =
+      '<span style="color:var(--dim)">正在實際呼叫兩個模型，最多等 20 秒…</span>';
+    send("model-test");
+  }
   else if (a === "model-reset"){
     t.textContent = "重試中…"; t.disabled = true;
     send("model-reset");
@@ -461,6 +471,23 @@ document.addEventListener("click", ev => {
 document.getElementById("search").addEventListener("input", renderHist);
 
 // Lua 呼叫這個把資料送進來
+// 連線測試的結果（Lua 打完 API 之後呼叫這個）
+window.vtTestResult = rows => {
+  const box = document.getElementById("testout");
+  if (!box) return;
+  box.innerHTML = (rows || []).map(r => {
+    const ok = r.status === "200";
+    return `<div style="margin:3px 0">
+      <span style="color:${ok ? "#22c55e" : "#ef4444"}">${ok ? "✓" : "✗"}</span>
+      <b>${esc(r.model)}</b>
+      <span style="color:var(--dim)">${ok ? r.ms + " ms" : esc(String(r.status))}</span>
+      ${r.error ? `<span style="color:var(--dim)"> — ${esc(r.error)}</span>` : ""}
+    </div>`;
+  }).join("") || '<span style="color:var(--dim)">沒有結果</span>';
+  const b = document.querySelector('[data-a="model-test"]');
+  if (b){ b.textContent = "測試連線"; b.disabled = false; }
+};
+
 window.vtReceive = data => {
   // 設定一定要先設好：上手說明裡要顯示熱鍵，先渲染歷史的話會變成「（未設定）」
   if (data.config)  {

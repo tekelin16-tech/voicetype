@@ -447,6 +447,34 @@ model_status(){
       cooldown_min:$cd, paused_min:$down, last_error:$last}'
 }
 
+# 實際打一次 API，回報每個模型通不通、多快。
+# 看記錄只能知道「上次失敗的原因」，這個是「現在到底能不能用」。
+model_test(){
+  local results="[]" m t0 t1 ms code body err
+  for m in "$DS_MODEL" "$DS_FALLBACK"; do
+    [ -z "$m" ] && continue
+    t0=$(python3 -c 'import time;print(int(time.time()*1000))')
+    body=$(curl -s -m 20 -w '\n%{http_code}' "$DS_ENDPOINT" \
+      -H "Content-Type: application/json" -H "Authorization: Bearer ${DEEPSEEK_API_KEY:-}" \
+      -d "$(jq -n --arg m "$m" '{model:$m,max_tokens:8,messages:[{role:"user",content:"ok"}]}')" \
+      2>/dev/null)
+    t1=$(python3 -c 'import time;print(int(time.time()*1000))')
+    ms=$((t1 - t0))
+    code=$(printf '%s' "$body" | tail -1)
+    body=$(printf '%s' "$body" | sed '$d')
+    if [ "$code" = "200" ]; then
+      err=""
+    elif [ "$code" = "000" ] || [ -z "$code" ]; then
+      code="逾時"; err="20 秒內沒有回應"
+    else
+      err=$(printf '%s' "$body" | jq -r '.error.message // empty' 2>/dev/null | head -c 120)
+    fi
+    results=$(printf '%s' "$results" | jq -c --arg m "$m" --arg c "$code" --argjson ms "$ms" \
+      --arg e "$err" '. + [{model:$m, status:$c, ms:$ms, error:$e}]')
+  done
+  printf '%s' "$results"
+}
+
 model_reset(){ rm -f "$COOLDOWN" "$APIDOWN"; log "使用者手動解除冷卻與暫停"; echo '{"ok":true}'; }
 
 corr_get(){ [ -f "$CORR" ] && cat "$CORR" || true; }
@@ -654,6 +682,7 @@ case "$cmd" in
   sync)         sync_vocab ;;
   sync-login)   sync_set_token ;;
   model-status) model_status ;;
+  model-test)   model_test ;;
   model-reset)  model_reset ;;
   corr-get)     corr_get ;;
   corr-add)     corr_add ;;
@@ -685,5 +714,5 @@ case "$cmd" in
           mic_ok && echo "麥克風「${MIC_NAME:-系統預設}」✓" || echo "麥克風「${MIC_NAME}」✗ 找不到"
           echo "模型: $MODEL"; [ -f "$MODEL" ] && echo "模型存在 ✓" || echo "模型不存在 ✗"
           [ -n "${DEEPSEEK_API_KEY:-}" ] && echo "DEEPSEEK_API_KEY 已設定 ✓" || echo "DEEPSEEK_API_KEY 未設定 ✗" ;;
-  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|sync|sync-login|model-status|model-reset|corr-get|corr-set|corr-add|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
+  *) echo "用法: vt.sh {toggle|start|stop|cancel|status|redo|config-get|config-set|sync|sync-login|model-status|model-test|model-reset|corr-get|corr-set|corr-add|history-get|history-edit|history-del|server-start|server-stop|test} [style]"; exit 1 ;;
 esac

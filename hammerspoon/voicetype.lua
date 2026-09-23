@@ -699,6 +699,12 @@ local function onUIMessage(msg)
   elseif a == "delete" then vt({ "history-del", p.id })
   elseif a == "copy" then hs.pasteboard.setContents(p.text or "")
   elseif a == "settings" then saveSettings(p)
+  elseif a == "model-test" then
+    vt({ "model-test" }, function(_, out)
+      if uiWin then
+        uiWin:evaluateJavaScript("window.vtTestResult(" .. (out ~= "" and out or "[]") .. ")")
+      end
+    end)
   elseif a == "model-reset" then
     vt({ "model-reset" }, function() hs.timer.doAfter(0.3, pushToUI) end)
   elseif a == "learn" then
