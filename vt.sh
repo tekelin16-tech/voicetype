@@ -17,7 +17,9 @@ CORR="$HOME/.config/voicetype/corrections.txt"
 : "${DS_TIMEOUT:=8}"                 # 主模型：短皮帶，反正有備援可以退
 : "${DS_TIMEOUT_FALLBACK:=25}"       # 備援：最後一道防線，給它久一點
 : "${DS_DOWN_COOLDOWN:=600}"         # 整個 API 都掛掉時，暫停呼叫多久（秒，預設 10 分鐘）
-: "${DS_COOLDOWN:=14400}"            # 主模型掛掉後，多久內直接走備援（秒，預設 4 小時）
+: "${DS_COOLDOWN:=300}"              # 主模型掛掉後，多久內直接走備援（秒）
+                                     # flash 是間歇性塞車，5 分鐘後就值得再試一次。
+                                     # 設太長（原本 4 小時）等於一次失敗就整個下午用慢的。
 : "${DS_ENDPOINT:=https://api.deepseek.com/chat/completions}"
 : "${STYLE:=default}"
 : "${SOUNDS:=1}"
@@ -454,9 +456,18 @@ model_test(){
   for m in "$DS_MODEL" "$DS_FALLBACK"; do
     [ -z "$m" ] && continue
     t0=$(python3 -c 'import time;print(int(time.time()*1000))')
+    # 用跟真實口述一樣大的請求。小請求（"ok" + max_tokens 8）在 flash 塞車時
+    # 照樣擠得進去，測起來永遠正常——但真正的請求（系統指令＋詞彙表＋前後文
+    # 約 1500 字元）就會失敗。測試要有意義就得跟真實情況一樣重。
+    local sys_test; sys_test=$(style_prompt default)
+    local terms; terms=$(corr_terms)
+    [ -n "$terms" ] && sys_test="${sys_test}
+使用者常用的專有名詞：${terms}"
     body=$(curl -s -m 20 -w '\n%{http_code}' "$DS_ENDPOINT" \
       -H "Content-Type: application/json" -H "Authorization: Bearer ${DEEPSEEK_API_KEY:-}" \
-      -d "$(jq -n --arg m "$m" '{model:$m,max_tokens:8,messages:[{role:"user",content:"ok"}]}')" \
+      -d "$(jq -n --arg m "$m" --arg s "$sys_test" \
+            '{model:$m,temperature:0.2,messages:[{role:"system",content:$s},
+              {role:"user",content:"呃那个我想说下礼拜三要把报价单寄给客户软件部分还要再确认一下"}]}')" \
       2>/dev/null)
     t1=$(python3 -c 'import time;print(int(time.time()*1000))')
     ms=$((t1 - t0))
